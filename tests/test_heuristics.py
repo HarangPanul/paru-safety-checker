@@ -117,9 +117,9 @@ def test_source_url_checks(url, rule):
     assert rule in rules(pkgbuild(f"source=('{url}')\nsha256sums=('abc')\n"))
 
 
-def test_normal_sources_are_clean():
+def test_normal_sources_are_not_suspicious_but_are_still_flagged_as_external():
     text = "source=(\"https://github.com/x/y/archive/v$pkgver.tar.gz\")\nsha256sums=('abc')\n"
-    assert scan(pkgbuild(text)) == []
+    assert {f.rule for f in scan(pkgbuild(text))} == {"external-source"}
 
 
 @pytest.mark.parametrize("name,hit", [

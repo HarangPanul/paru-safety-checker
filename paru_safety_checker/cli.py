@@ -5,8 +5,8 @@ import sys
 from typing import Callable
 
 from .fetch import FetchError, fetch_package_files
-from .heuristics import level_of, scan
-from .models import Verdict, worst
+from .heuristics import dependencies, level_of, scan
+from .models import Finding, Verdict, worst
 from .providers import Provider, ProviderError, make_provider
 from .report import format_verdict
 
@@ -32,9 +32,21 @@ def install_targets(args: list[str]) -> list[str]:
     return [n.split("/", 1)[1] if n.startswith("aur/") else n for n in names]
 
 
+def _pacman_ok(*args: str) -> bool:
+    try:
+        return subprocess.run(["pacman", *args], capture_output=True, stdin=subprocess.DEVNULL).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 def pacman_has(package: str) -> bool:
     """True if the package is in the official repos (not an AUR build)."""
-    return subprocess.run(["pacman", "-Si", package], capture_output=True).returncode == 0
+    return _pacman_ok("-Si", package)
+
+
+def dep_available(dep: str) -> bool:
+    """True if a dependency is installed or resolvable from the official repos (incl. virtual provides)."""
+    return _pacman_ok("-T", dep) or _pacman_ok("-Sp", "--noconfirm", "--", dep)
 
 
 def run_paru(args: list[str]) -> int:
@@ -51,6 +63,7 @@ def main(
     provider: Provider | None = None,
     fetcher: Callable[[str], dict[str, str] | None] = fetch_package_files,
     in_repo: Callable[[str], bool] = pacman_has,
+    dep_ok: Callable[[str], bool] = dep_available,
     runner: Callable[[list[str]], int] = run_paru,
     ask: Callable[[str], str] = input,
 ) -> int:
@@ -72,7 +85,7 @@ def main(
             continue
         if files is None:
             continue  # not an AUR package; paru will report it
-        static = scan(files, package)
+        static = scan(files, package) + _dependency_findings(package, files, targets, dep_ok)
         static_level = level_of(static)
         if static_level == "danger":
             # No need to spend an AI call: the rules already block this package.
@@ -104,6 +117,17 @@ def main(
         if not _confirm(ask, "Package flagged DANGER. Type 'yes' to install anyway: ", exact="yes"):
             return 1
     return runner(args)
+
+
+def _dependency_findings(package: str, files: dict[str, str], targets: list[str], dep_ok: Callable[[str], bool]) -> list[Finding]:
+    """paru builds AUR dependencies too, and nothing here reviews them unless they are named."""
+    return [
+        Finding("caution", f"Dependency {dep} is not in the official repositories; paru will fetch and build it "
+                           f"from the AUR without paru-safe reviewing it (name it on the command line to review it)",
+                "PKGBUILD", None, "unreviewed-dependency")
+        for dep in dependencies(files)
+        if dep != package and dep not in targets and not dep_ok(dep)
+    ]
 
 
 def _confirm(ask: Callable[[str], str], prompt: str, exact: str | None = None) -> bool:

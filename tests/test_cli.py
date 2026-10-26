@@ -17,7 +17,7 @@ class FakeProvider:
         return self.verdict
 
 
-def run(argv, provider, answers=(), files=None, in_repo=lambda p: False, fetcher=None):
+def run(argv, provider, answers=(), files=None, in_repo=lambda p: False, fetcher=None, dep_ok=lambda d: True):
     ran = []
     answers = iter(answers)
     code = main(
@@ -25,6 +25,7 @@ def run(argv, provider, answers=(), files=None, in_repo=lambda p: False, fetcher
         provider=provider,
         fetcher=fetcher or (lambda pkg: files if files is not None else {"PKGBUILD": "pkgname=x"}),
         in_repo=in_repo,
+        dep_ok=dep_ok,
         runner=lambda a: ran.append(a) or 0,
         ask=lambda prompt: next(answers),
     )
@@ -153,3 +154,45 @@ def test_static_caution_overrides_ai_safe_and_findings_reach_ai():
 
 def test_static_caution_confirmed_installs():
     assert run(["-S", "foo"], FakeProvider(safe), answers=["y"], files=SUSPICIOUS) == (0, [["-S", "foo"]])
+
+
+WITH_DEPS = {"PKGBUILD": "pkgname=foo\ndepends=('glibc' 'aur-lib' 'other-aur')\nmakedepends=('cmake')\n"}
+
+
+def test_aur_dependencies_warn_even_if_the_ai_says_safe():
+    seen = {}
+
+    class Spy:
+        def analyze(self, package, files, findings=None):
+            seen["rules"] = [f.rule for f in findings]
+            return safe
+
+    available = {"glibc", "cmake"}
+    assert run(["-S", "foo"], Spy(), answers=["n"], files=WITH_DEPS, dep_ok=lambda d: d in available) == (1, [])
+    assert seen["rules"] == ["unreviewed-dependency", "unreviewed-dependency"]
+    assert run(["-S", "foo"], Spy(), answers=["y"], files=WITH_DEPS, dep_ok=lambda d: d in available) == (0, [["-S", "foo"]])
+
+
+def test_dependencies_named_on_the_command_line_are_reviewed_not_warned_about():
+    class Spy:
+        calls = []
+
+        def analyze(self, package, files, findings=None):
+            self.calls.append((package, [f.rule for f in findings]))
+            return safe
+
+    spy = Spy()
+    files = {"PKGBUILD": "pkgname=foo\ndepends=('aur-lib')\n"}
+    code, ran = run(["-S", "foo", "aur-lib"], spy, files=files, dep_ok=lambda d: False)
+    assert (code, ran) == (0, [["-S", "foo", "aur-lib"]])
+    assert spy.calls == [("foo", []), ("aur-lib", [])]
+
+
+def test_all_dependencies_in_official_repos_do_not_add_a_warning():
+    assert run(["-S", "foo"], FakeProvider(safe), files=WITH_DEPS, dep_ok=lambda d: True) == (0, [["-S", "foo"]])
+
+
+def test_a_package_with_a_remote_source_always_asks_the_user():
+    files = {"PKGBUILD": "pkgname=foo\nsource=('https://example.com/x.tgz')\nsha256sums=('a')\n"}
+    assert run(["-S", "foo"], FakeProvider(safe), answers=["n"], files=files) == (1, [])
+    assert run(["-S", "foo"], FakeProvider(safe), answers=["y"], files=files) == (0, [["-S", "foo"]])

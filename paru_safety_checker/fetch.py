@@ -10,6 +10,7 @@ AUR_URL = "https://aur.archlinux.org/{}.git"
 PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*$")
 MAX_FILE_BYTES = 64 * 1024
 MAX_TOTAL_BYTES = 256 * 1024
+TRUNCATED_MARKER = "[TRUNCATED: file exceeds size limit]"
 
 
 class FetchError(Exception):
@@ -52,7 +53,7 @@ def collect_files(root: Path) -> dict[str, str]:
             omitted.append(f"{name} (total size limit)")
             continue
         if len(raw) > MAX_FILE_BYTES:
-            text = text[:MAX_FILE_BYTES] + "\n[TRUNCATED: file exceeds size limit]"
+            text = text[:MAX_FILE_BYTES] + "\n" + TRUNCATED_MARKER
         files[name] = text
         total += min(len(raw), MAX_FILE_BYTES)
     if omitted:

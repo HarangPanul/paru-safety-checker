@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from .fetch import TRUNCATED_MARKER
 from .models import Finding, worst
 
 # Package / npm names from real incidents (Arch AUR notice, July 2025; npm payload campaign).
@@ -31,10 +32,6 @@ CORE_PACKAGES = frozenset({
     "shadow", "util-linux", "gnupg", "archlinux-keyring", "pam", "grub", "polkit", "gcc-libs", "zlib", "curl",
 })
 PREBUILT_EXT = (".appimage", ".deb", ".rpm", ".run", ".exe", ".msi", ".jar", ".bin", ".snap", ".flatpak", ".sh")
-HARMLESS_BINARY_EXT = (
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".icns", ".bmp", ".webp", ".xpm", ".ttf", ".otf", ".woff",
-    ".woff2", ".pdf", ".gpg", ".sig", ".pgp", ".kbx",
-)
 SUMS_RE = re.compile(r"^(?:md5|sha1|sha224|sha256|sha384|sha512|b2|ck)sums(_\w+)?$")
 
 
@@ -74,6 +71,7 @@ _DECODERS = r"(?:base32|xxd|openssl|rev(?![-\w])|uudecode|gunzip|gzip|zcat|bzcat
 _WRITE = r"(?:(?<![\d&])>>?|\btee\b|\bsed\s+-i|\bcp\b|\bmv\b|\binstall\b|\bln\b|\brm\b|\bchattr\b)"
 # an absolute path that is not under $pkgdir / ${var} / "$pkgdir"
 _ABS = r"(?<![\w}])(?<!dir\")(?<!DIR\")"
+_CMD = r"(?:^|[;&|(]\s*)(?:(?:sudo|env|time|nice|xvfb-run|\w+=\S*)\s+)*"  # command position
 _PRIVATE_IP = r"(?!(?:127|0|10)\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)"
 _HOME = r"(?:~|\$HOME|\$\{HOME\}|/home/[^/\s]+|/root)"
 _SYSDIRS = r"(?:usr|etc|opt|bin|sbin|lib|lib64|boot|var|root|home|srv)"
@@ -348,10 +346,39 @@ RULES: tuple[Rule, ...] = (
        "Install hook edits sensitive system files", scope="install"),
     # ---- info: weak hints ----
     _r("eval", "info", r"\beval\b", "Uses eval", scope="code"),
-    _r("git-clone-build", "info", r"\bgit\s+clone\b", "Clones a repository at build time (unpinned source)", scope="build"),
-    _r("curl-in-substitution", "info", _CS + r"(?:curl|wget)\b", "Network access inside a command substitution", scope="code"),
-    _r("registry-deps", "info", r"\b(?:npm\s+(?:ci|install|i)|pnpm\s+install|yarn\s+install|bundle\s+install)\b",
-       "Installs dependencies from a registry at build time", scope="build"),
+    _r("curl-in-substitution", "caution", _CS + r"(?:curl|wget)\b",
+       "Downloads inside a command substitution (runs whenever the file is parsed)", scope="code"),
+    _r("vcs-fetch", "caution",
+       r"\b(?:git\s+(?:clone|fetch|pull|submodule\s+(?:update|add)|remote\s+add)|svn\s+(?:co|checkout|export|up|update)"
+       r"|hg\s+(?:clone|pull)|bzr\s+(?:branch|checkout)|fossil\s+clone)\b",
+       "Fetches code from a remote repository during the build or install", scope="code"),
+    _r("dependency-fetch", "caution",
+       r"\bgo\s+(?:get|mod\s+(?:download|tidy|vendor)|install|build|test|run|generate)\b"
+       r"|\bcargo\s+(?:fetch|build|install|update|vendor|check|test|run|rustc)\b(?![^\n]*--(?:offline|frozen))"
+       r"|\b(?:npm|pnpm|yarn|bun)\s+(?:ci|install|i|add|update|up|exec|dlx)\b|(?:^|[;&|(]\s*)yarn\s*(?:$|[;&|])"
+       r"|\bpip3?\s+(?:install|download|wheel)\b(?![^\n]*--no-index)"
+       r"|\bpython[\d.]*\s+-m\s+build\b(?![^\n]*(?:--no-isolation|\s-n\b))"
+       r"|\b(?:poetry|pdm|pipenv|pipx|tox|nox|hatch)\s+(?:install|sync|run|add|update|build|lock)\b|\buv\s+(?:pip|sync|run|add|build|tool)\b"
+       r"|\bgem\s+(?:install|fetch|update)\b|\bbundler?\s+(?:install|update|config|lock)\b"
+       r"|\bcomposer\s+(?:install|update|require|create-project)\b"
+       r"|\bdotnet\s+(?:restore|build|publish|run|test|tool|add)\b"
+       r"|\b(?:flutter\s+(?:pub|build)|dart\s+(?:pub|compile))\b"
+       r"|\bmix\s+(?:deps|local\.hex|local\.rebar|release|compile|escript)\b"
+       r"|\b(?:cabal|stack)\s+(?:update|install|build|fetch|setup|v2-\w+)\b"
+       r"|\bopam\s+(?:install|update|init|switch)\b|\bnimble\s+(?:install|build|refresh)\b|\bluarocks\s+install\b"
+       r"|\bdub\s+(?:build|fetch|run)\b|\bzig\s+build\b|\bconan\s+install\b|\bmeson\s+(?:subprojects|wrap)\b"
+       r"|\b(?:crystal\s+(?:build|deps)|shards\s+(?:install|update))\b"
+       + r"|" + _CMD + r"(?:\./)?(?:mvnw?|gradlew?|sbt|lein|ant|nuget|vcpkg|cpanm?|corepack|npx)(?![-\w])",
+       "Build tool that downloads dependencies at build time (code that is not in the reviewed files)", scope="code"),
+    _r("system-install", "caution",
+       _CMD + r"(?:pacman|paru|yay|pamac|aura|trizen|yaourt|apt(?:-get)?|dnf|yum|zypper|snap|flatpak|brew|nix(?:-env)?)\s+"
+       r"(?:-[SU]\w*|install|add|pull|update|upgrade)\b"
+       r"|" + _CMD + r"(?:docker|podman)\s+(?:pull|run|build|create|compose)\b",
+       "Installs software or pulls container images from inside the package script", scope="code"),
+    _r("download-tool", "caution",
+       _CMD + r"(?:lftp|axel|tftp|ftp|sftp|gsutil|rclone|yt-dlp|youtube-dl|transmission-cli|wget2|ipfs|https?|xh"
+       r"|git\s+lfs|gh\s+(?:release|repo|api)|aws\s+s3|az\s+storage)\s",
+       "Uses a download tool at build time", scope="code"),
     _r("setcap", "info", r"\bsetcap\b", "Grants file capabilities", scope="code"),
     _r("world-writable", "info", r"\bchmod\s+(?:-\w+\s+)*(?:0?777|a\+rwx|ugo\+rwx|o\+w)\b", "Makes files world-writable", scope="code"),
     _r("user-management", "info", r"\b(?:useradd|usermod|adduser|chpasswd|gpasswd)\b", "Creates or modifies system users", scope="code"),
@@ -453,6 +480,36 @@ def _scan_anomalies(name: str, text: str) -> list[Finding]:
     return findings
 
 
+def _arrays(text: str):
+    """Yield (name, appends, body, line) for every `name=(...)` / `name+=(...)`.
+
+    Quote- and nesting-aware: `source=("$(true)" 'http://evil/x')` must not end at the first `)`.
+    """
+    for match in re.finditer(r"^[ \t]*(\w+)(\+?)=\(", text, re.M):
+        i, depth, quote = match.end(), 1, ""
+        while i < len(text) and depth:
+            c = text[i]
+            if quote:
+                if c == "\\" and quote == '"':
+                    i += 1
+                elif c == quote:
+                    quote = ""
+            elif c in "'\"":
+                quote = c
+            elif c == "\\":
+                i += 1
+            elif c == "#" and text[i - 1].isspace():
+                newline = text.find("\n", i)
+                i = len(text) if newline < 0 else newline
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1
+        end = i - 1 if depth == 0 else i
+        yield match.group(1), bool(match.group(2)), text[match.end():end], text.count("\n", 0, match.start()) + 1
+
+
 def _array_items(body: str) -> list[str]:
     body = re.sub(r"(?m)(^|\s)#.*$", "", body)
     return [t.strip("'\"") for t in re.findall(r"'[^']*'|\"[^\"]*\"|\S+", body)]
@@ -490,10 +547,12 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
     arrays: dict[str, tuple[list[str], int]] = {}
     sources: dict[str, list[str]] = {}
     sums: list[tuple[str, list[str], int]] = []
-    for match in re.finditer(r"^\s*(\w+)=\(([^)]*)\)", text, re.M | re.S):
-        key, items = match.group(1), _array_items(match.group(2))
-        line = text.count("\n", 0, match.start()) + 1
+    for key, appends, body, line in _arrays(text):
+        items = _array_items(body)
+        if appends and key in arrays:
+            items, line = arrays[key][0] + items, arrays[key][1]
         arrays[key] = (items, line)
+    for key, (items, line) in arrays.items():
         if key == "source" or key.startswith("source_"):
             sources[key[len("source"):]] = items
         elif SUMS_RE.match(key):
@@ -505,6 +564,8 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
         for item in items:
             url = _expand(item, variables).split("::", 1)[-1]
             if "://" not in url:
+                if "$" in url and ("/" in url or re.fullmatch(r"\$\{?[\w\[\]@*#!]+\}?", url)):
+                    findings.append(Finding("caution", f"Source could not be resolved, so it was not checked: {item}", name, _line_of(text, item), "unresolved-source"))
                 continue
             is_vcs = url.startswith(VCS_PREFIXES)
             target = url.split("+", 1)[1] if is_vcs else url
@@ -515,10 +576,13 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
                 if parts.path.startswith(("/etc", "/root", "/home")):
                     findings.append(Finding("caution", f"Source reads a local file: {url}", name, line, "file-source"))
                 continue
+            findings.append(Finding("caution", f"External source, not reviewed by paru-safe: {url}", name, line, "external-source"))
+            if is_vcs and not re.search(r"#(?:commit|tag)=", url):
+                findings.append(Finding("caution", f"VCS source is not pinned to a commit or tag, so what is built can differ from what was reviewed: {url}", name, line, "unpinned-vcs"))
             if not is_vcs:
                 remote_non_vcs.append(item)
                 if parts.path.lower().endswith(PREBUILT_EXT):
-                    findings.append(Finding("info", f"Source is a prebuilt binary or installer: {url}", name, line, "prebuilt-source"))
+                    findings.append(Finding("caution", f"Source is a prebuilt binary or installer: {url}", name, line, "prebuilt-source"))
             if target.startswith(("http://", "ftp://", "git://")):
                 findings.append(Finding("caution", f"Source over an insecure protocol: {url}", name, line, "insecure-source"))
             if "$" in host:
@@ -573,7 +637,7 @@ def _scan_omitted(text: str) -> list[Finding]:
             findings.append(Finding(severity, f"Symlink in the package repository (not followed): {name}", name, None, "symlink"))
         elif why == "total size limit":
             findings.append(Finding("caution", f"Not reviewed (total size limit): {name}", name, None, "incomplete"))
-        elif not name.lower().endswith(HARMLESS_BINARY_EXT):
+        else:
             findings.append(Finding("caution", f"Binary or unreadable file in the repository, not reviewed: {name}", name, None, "binary-in-repo"))
     if not parsed:
         findings.append(Finding("caution", "Some files were not reviewed (too large or binary)", "(omitted-files)", None, "incomplete"))
@@ -581,6 +645,24 @@ def _scan_omitted(text: str) -> list[Finding]:
 
 
 _DOWNLOAD_RULES = frozenset({"ip-download", "build-time-download", "install-hook-network", "registry-install"})
+
+
+_DEP_KEY = re.compile(r"^(?:depends|makedepends|checkdepends)(?:_\w+)?$")
+
+
+def dependencies(files: dict[str, str]) -> list[str]:
+    """Package names the PKGBUILD pulls in at install/build time (optdepends are only suggestions)."""
+    text = files.get("PKGBUILD", "")
+    variables = _variables(text)
+    names: list[str] = []
+    for key, _, body, _ in _arrays(text):
+        if not _DEP_KEY.match(key):
+            continue
+        for item in _array_items(body):
+            dep = re.split(r"[<>=:]", _expand(item, variables))[0].strip()
+            if dep and "$" not in dep and dep not in names:
+                names.append(dep)
+    return names
 
 
 def _correlate(name: str, findings: list[Finding]) -> list[Finding]:
@@ -600,6 +682,10 @@ def scan(files: dict[str, str], package: str | None = None) -> list[Finding]:
             findings.extend(_scan_omitted(text))
             continue
         found = _scan_lines(name, text) + _scan_anomalies(name, text)
+        if TRUNCATED_MARKER in text:
+            found.append(Finding("caution", "File is larger than the review limit; only its beginning was reviewed", name, None, "truncated-file"))
+        if name.rsplit("/", 1)[-1] == ".gitmodules":
+            found.append(Finding("caution", "Git submodules pull in external code that this review does not cover", name, None, "git-submodules"))
         if name == "PKGBUILD":
             found += _scan_pkgbuild(name, text)
         if name == "PKGBUILD" or name.endswith(".install"):

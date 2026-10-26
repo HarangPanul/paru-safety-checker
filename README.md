@@ -33,6 +33,16 @@ AI 판정은 보조 수단이며 완전한 안전을 보장하지 않습니다. 
 소스 URL 검사(http/IP/단축URL/GitHub 사칭/체크섬 SKIP/체크섬 없음), PKGBUILD 최상위 코드 실행(파싱만 해도 실행됨), 심볼릭 링크·바이너리 파일.
 `$url` 같은 단순 변수는 펼쳐서 소스 URL을 검사하고, "다운로드 + `/tmp`에서 실행" 같은 조합은 danger로 올립니다.
 
+### 검토하지 못한 것과 외부에서 들여오는 것은 항상 경고
+
+미탐보다 오탐이 낫다는 원칙으로, 정상 여부와 상관없이 아래는 모두 `caution`(설치 전 확인)입니다.
+
+- 검토하지 못한 파일: 바이너리(PNG 포함), 읽을 수 없는 파일, 크기 제한으로 잘린 파일·누락된 파일, 심볼릭 링크, git submodule
+- `source`의 모든 원격 URL(https·체크섬 유무와 무관), 고정되지 않은 VCS 소스, 변수라서 해석할 수 없는 소스
+- 빌드 중 의존성을 내려받는 도구: go / cargo / npm·pnpm·yarn / pip·`python -m build`(격리 빌드) / gem / maven·gradle / dotnet 등
+- 빌드 중 `git clone`·`git fetch`, `curl`/`wget`, 설치 도구(`pacman -S`, `docker pull` 등)
+- 공식 저장소에 없는 의존성: paru가 AUR에서 받아 빌드하지만 `paru-safe`가 검토하지 않으므로, 명령줄에 직접 적어야 검토됩니다.
+
 ## 규칙 기반 검사의 오탐 측정
 
 인기 AUR 패키지(정상으로 가정)의 PKGBUILD를 모아 규칙 검사를 돌려 오탐률을 봅니다.
