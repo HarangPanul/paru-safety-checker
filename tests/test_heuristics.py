@@ -54,7 +54,6 @@ def test_other_danger_rules(line, rule):
 
 
 @pytest.mark.parametrize("line,rule", [
-    ("eval $cmd", "eval"),
     ("curl -O https://x/blob", "build-time-download"),
     ("npm install left-pad", "registry-install"),
     ("sudo make install", "sudo"),

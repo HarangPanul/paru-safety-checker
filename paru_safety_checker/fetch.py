@@ -34,13 +34,12 @@ def collect_files(root: Path) -> dict[str, str]:
     Oversized files are truncated and files beyond the total budget are listed as
     omitted, always with a marker, so the reviewer knows coverage is incomplete.
     """
-    candidates = [
-        p for p in root.rglob("*")
-        if p.is_file() and ".git" not in p.relative_to(root).parts and not p.is_symlink()
-    ]
+    paths = [p for p in root.rglob("*") if ".git" not in p.relative_to(root).parts]
+    candidates = [p for p in paths if p.is_file() and not p.is_symlink()]
     files: dict[str, str] = {}
     total = 0
-    omitted: list[str] = []
+    # symlinks are never followed: the reviewer must know they exist
+    omitted: list[str] = [f"{p.relative_to(root)} (symlink)" for p in paths if p.is_symlink()]
     for path in sorted(candidates, key=_priority):
         name = str(path.relative_to(root))
         try:

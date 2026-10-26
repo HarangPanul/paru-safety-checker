@@ -18,6 +18,21 @@ paru-safe -S some-aur-package
 
 AI 판정은 보조 수단이며 완전한 안전을 보장하지 않습니다. 중요한 패키지는 PKGBUILD를 직접 확인하세요.
 
+## 규칙 기반 사전 검사
+
+`paru_safety_checker/heuristics.py`의 규칙(약 100개)이 AI 호출 전에 PKGBUILD / `*.install` / 패치를 검사합니다.
+심각도는 세 단계입니다.
+
+- `danger`: 차단. AI를 호출하지 않으며, AI가 `safe`라고 해도 뒤집지 못합니다.
+- `caution`: 설치 전 사용자 확인을 요구합니다.
+- `info`: 약한 힌트. 판정에는 영향이 없고 리포트와 AI 프롬프트에만 표시됩니다.
+
+주요 분류: 원격 코드 실행(`curl|sh`, `bash <(curl)`, 디코드 후 실행, 명령어 이름 난독화), 리버스/바인드 셸, 자격증명·지갑·브라우저 데이터 접근과 유출,
+지속성(cron, systemd, shell rc, ld.so.preload, sudoers), 권한 상승(setuid, UID 0), 방어 회피(로그·히스토리 삭제, 보안 도구 비활성화),
+파괴(`rm -rf /`, 디스크 쓰기), 채굴, 알려진 사건의 패키지명, 리뷰어를 노린 프롬프트 인젝션·유니코드 속임수(Trojan Source),
+소스 URL 검사(http/IP/단축URL/GitHub 사칭/체크섬 SKIP/체크섬 없음), PKGBUILD 최상위 코드 실행(파싱만 해도 실행됨), 심볼릭 링크·바이너리 파일.
+`$url` 같은 단순 변수는 펼쳐서 소스 URL을 검사하고, "다운로드 + `/tmp`에서 실행" 같은 조합은 danger로 올립니다.
+
 ## 규칙 기반 검사의 오탐 측정
 
 인기 AUR 패키지(정상으로 가정)의 PKGBUILD를 모아 규칙 검사를 돌려 오탐률을 봅니다.
