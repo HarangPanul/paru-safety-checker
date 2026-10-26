@@ -61,19 +61,27 @@ def collect_files(root: Path) -> dict[str, str]:
     return files
 
 
-def fetch_package_files(package: str) -> dict[str, str] | None:
-    """Clone the AUR repo of `package`; return its files, or None if it has no PKGBUILD."""
+def clone_package(package: str, dest: Path) -> None:
+    """Shallow-clone the AUR repo of `package` (an AUR package *base*) into `dest`."""
     if not valid_package_name(package):
         raise FetchError(f"invalid package name: {package!r}")
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    with tempfile.TemporaryDirectory(prefix="paru-safe-") as tmp:
-        dest = Path(tmp) / "pkg"
+    try:
         result = subprocess.run(
             ["git", "clone", "--depth", "1", "--quiet", AUR_URL.format(package), str(dest)],
             capture_output=True, text=True, env=env, timeout=120,
         )
-        if result.returncode != 0:
-            raise FetchError(result.stderr.strip() or "git clone failed")
+    except subprocess.TimeoutExpired as exc:
+        raise FetchError("git clone timed out") from exc
+    if result.returncode != 0:
+        raise FetchError(result.stderr.strip() or "git clone failed")
+
+
+def fetch_package_files(package: str) -> dict[str, str] | None:
+    """Clone the AUR repo of `package`; return its files, or None if it has no PKGBUILD."""
+    with tempfile.TemporaryDirectory(prefix="paru-safe-") as tmp:
+        dest = Path(tmp) / "pkg"
+        clone_package(package, dest)
         if not (dest / "PKGBUILD").is_file():
             return None
         return collect_files(dest)
