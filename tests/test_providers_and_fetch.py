@@ -102,3 +102,9 @@ def test_collect_files_order_and_limits(tmp_path):
 @pytest.mark.parametrize("name,ok", [("foo-bin", True), ("g++", True), ("-oops", False), ("a/b", False), ("", False)])
 def test_valid_package_name(name, ok):
     assert fetch.valid_package_name(name) is ok
+
+
+def test_prompt_includes_prescan_findings():
+    from paru_safety_checker.models import Finding
+    prompt = build_user_prompt("foo", {"PKGBUILD": "x"}, [Finding("caution", "uses sudo", "PKGBUILD", 3, "sudo")])
+    assert "pre-scan findings" in prompt and "[caution] sudo PKGBUILD:3" in prompt

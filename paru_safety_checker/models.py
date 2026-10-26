@@ -37,6 +37,7 @@ class Finding:
     message: str
     file: str = ""
     line: int | None = None
+    rule: str = ""
 
 
 @dataclass

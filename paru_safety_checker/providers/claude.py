@@ -5,7 +5,7 @@ import os
 import urllib.error
 import urllib.request
 
-from ..models import VERDICT_SCHEMA, Verdict
+from ..models import VERDICT_SCHEMA, Finding, Verdict
 from ..prompt import SYSTEM_PROMPT, build_user_prompt
 from .base import ProviderError
 
@@ -27,14 +27,14 @@ class ClaudeProvider:
         self.model = model or os.environ.get("PARU_SAFE_MODEL", DEFAULT_MODEL)
         self.base_url = (base_url or os.environ.get("ANTHROPIC_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
 
-    def analyze(self, package: str, files: dict[str, str]) -> Verdict:
+    def analyze(self, package: str, files: dict[str, str], findings: list[Finding] | None = None) -> Verdict:
         body = {
             "model": self.model,
             "max_tokens": 2048,
             "system": SYSTEM_PROMPT,
             "tools": [TOOL],
             "tool_choice": {"type": "tool", "name": TOOL_NAME},
-            "messages": [{"role": "user", "content": build_user_prompt(package, files)}],
+            "messages": [{"role": "user", "content": build_user_prompt(package, files, findings)}],
         }
         request = urllib.request.Request(
             f"{self.base_url}/v1/messages",

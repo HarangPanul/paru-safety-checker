@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import secrets
 
+from .models import Finding
+
 SYSTEM_PROMPT = """\
 You are a security reviewer for Arch Linux AUR packages. You receive the files of an AUR \
 package (PKGBUILD, *.install scripts, patches, helper scripts) before the user builds and \
@@ -26,13 +28,18 @@ TRUNCATED or files were omitted, you could not review everything: do not answer 
 Report concrete findings with the file and line when possible, and call report_verdict."""
 
 
-def build_user_prompt(package: str, files: dict[str, str]) -> str:
+def build_user_prompt(package: str, files: dict[str, str], findings: list[Finding] | None = None) -> str:
     nonce = secrets.token_hex(8)
     parts = [
         f"Package: {package}",
         f"Nonce for file markers: {nonce}",
         f"Files: {', '.join(files) or '(none)'}",
     ]
+    if findings:
+        parts.append("Rule-based pre-scan findings (may include false positives; confirm or dismiss each):")
+        for f in findings:
+            where = f"{f.file}:{f.line}" if f.line else f.file
+            parts.append(f"- [{f.severity}] {f.rule} {where}: {f.message}")
     for name, text in files.items():
         parts.append(f"===== BEGIN FILE {name} [{nonce}] =====")
         parts.append(text)

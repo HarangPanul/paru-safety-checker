@@ -18,5 +18,6 @@ def format_verdict(package: str, verdict: Verdict) -> str:
     for finding in verdict.findings:
         where = finding.file + (f":{finding.line}" if finding.line else "")
         prefix = f"  - {_paint(finding.severity, finding.severity)}"
-        lines.append(f"{prefix} {where + ': ' if where else ''}{finding.message}")
+        tag = f" [{finding.rule}]" if finding.rule else ""
+        lines.append(f"{prefix} {where + ': ' if where else ''}{finding.message}{tag}")
     return "\n".join(lines)

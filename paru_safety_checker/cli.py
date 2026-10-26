@@ -5,6 +5,7 @@ import sys
 from typing import Callable
 
 from .fetch import FetchError, fetch_package_files
+from .heuristics import level_of, scan
 from .models import Verdict, worst
 from .providers import Provider, ProviderError, make_provider
 from .report import format_verdict
@@ -71,14 +72,21 @@ def main(
             continue
         if files is None:
             continue  # not an AUR package; paru will report it
-        try:
-            if provider is None:
-                provider = make_provider()
-            verdict: Verdict = provider.analyze(package, files)
-        except ProviderError as exc:
-            _err(f"[paru-safe] analysis failed for {package}: {exc}")
-            unchecked.append(package)
-            continue
+        static = scan(files, package)
+        static_level = level_of(static)
+        if static_level == "danger":
+            # No need to spend an AI call: the rules already block this package.
+            verdict = Verdict("danger", "Rule-based scan found dangerous patterns (AI review skipped)", static)
+        else:
+            try:
+                if provider is None:
+                    provider = make_provider()
+                ai = provider.analyze(package, files, static)
+            except ProviderError as exc:
+                _err(f"[paru-safe] analysis failed for {package}: {exc}")
+                unchecked.append(package)
+                continue
+            verdict = Verdict(worst(static_level, ai.level), ai.summary, static + ai.findings)
         _err(format_verdict(package, verdict))
         level = worst(level, verdict.level)
 

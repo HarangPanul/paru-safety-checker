@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..models import Verdict
+from ..models import Finding, Verdict
 
 
 class ProviderError(Exception):
@@ -10,4 +10,4 @@ class ProviderError(Exception):
 
 
 class Provider(Protocol):
-    def analyze(self, package: str, files: dict[str, str]) -> Verdict: ...
+    def analyze(self, package: str, files: dict[str, str], findings: list[Finding] | None = None) -> Verdict: ...
