@@ -99,7 +99,9 @@ def main(
                 _err(f"[paru-safe] analysis failed for {package}: {exc}")
                 unchecked.append(package)
                 continue
-            verdict = Verdict(worst(static_level, ai.level), ai.summary, static + ai.findings)
+            # the AI can only raise the level; findings it lists count even if its headline says "safe"
+            level_now = worst(worst(static_level, ai.level), level_of(ai.findings))
+            verdict = Verdict(level_now, ai.summary, static + ai.findings)
         _err(format_verdict(package, verdict))
         level = worst(level, verdict.level)
 

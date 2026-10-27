@@ -149,7 +149,7 @@ def test_static_caution_overrides_ai_safe_and_findings_reach_ai():
             return safe
 
     assert run(["-S", "foo"], Spy(), answers=["n"], files=SUSPICIOUS) == (1, [])
-    assert [f.rule for f in seen["findings"]] == ["sudo"]
+    assert "sudo" in [f.rule for f in seen["findings"]]
 
 
 def test_static_caution_confirmed_installs():
@@ -196,3 +196,10 @@ def test_a_package_with_a_remote_source_always_asks_the_user():
     files = {"PKGBUILD": "pkgname=foo\nsource=('https://example.com/x.tgz')\nsha256sums=('a')\n"}
     assert run(["-S", "foo"], FakeProvider(safe), answers=["n"], files=files) == (1, [])
     assert run(["-S", "foo"], FakeProvider(safe), answers=["y"], files=files) == (0, [["-S", "foo"]])
+
+
+def test_ai_findings_count_even_when_its_headline_says_safe():
+    inconsistent = Verdict("safe", "fine", [Finding("danger", "but actually curl|sh", "PKGBUILD", 2)])
+    assert run(["-S", "foo"], FakeProvider(inconsistent)) == (1, [])
+    inconsistent = Verdict("safe", "fine", [Finding("caution", "hmm", "PKGBUILD", 2)])
+    assert run(["-S", "foo"], FakeProvider(inconsistent), answers=["n"]) == (1, [])

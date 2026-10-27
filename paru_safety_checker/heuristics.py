@@ -3,8 +3,8 @@
 Deterministic, free, and independent of the model: a `danger` finding here blocks the
 install even if the AI is unavailable or has been talked into answering "safe".
 
-Severities: `danger` blocks, `caution` asks the user, `info` is only a hint for the reader
-and the AI (it never changes the verdict).
+Severities: `danger` blocks, `caution` asks the user. There is deliberately no "hint" level:
+anything worth reporting makes the user confirm.
 """
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 from .fetch import TRUNCATED_MARKER
 from .models import Finding, worst
+from .strict import logical_lines as _logical_lines
+from .strict import scan_strict
 
 # Package / npm names from real incidents (Arch AUR notice, July 2025; npm payload campaign).
 KNOWN_BAD_PACKAGES = frozenset({"librewolf-fix-bin", "firefox-patch-bin", "zen-browser-patched-bin"})
@@ -291,6 +293,10 @@ RULES: tuple[Rule, ...] = (
        r"\balias\s+(?:sudo|su|ssh|pacman|paru|yay|git|curl|wget|cat|ls|cd)=|^(?:function\s+)?(?:sudo|su|ssh|pacman|paru|yay)\s*\(\s*\)",
        "Shadows a common command", scope="code"),
     _r("ld-preload-env", "caution", r"\bLD_PRELOAD\b", "Uses LD_PRELOAD", scope="code"),
+    _r("path-modification", "caution", r"\bPATH\s*\+?=", "Changes PATH, so an allowed command name may resolve to a different program", scope="code"),
+    _r("exec-env-var", "caution",
+       r"\b(?:BASH_ENV|PROMPT_COMMAND|PYTHONSTARTUP|PYTHONPATH|NODE_OPTIONS|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB|LD_LIBRARY_PATH|LD_AUDIT|GCONV_PATH|SHELLOPTS|PS4)\s*\+?=",
+       "Sets an environment variable that makes a tool load or run other code", scope="code"),
     _r("base64-decode", "caution", r"\bbase64\s+(?:-d|--decode|-D)\b", "Decodes base64 data", scope="code"),
     _r("long-encoded-blob", "caution", r"[A-Za-z0-9+/]{200,}={0,2}", "Contains a long encoded blob that cannot be reviewed", scope="code"),
     _r("miner-software", "caution",
@@ -344,8 +350,8 @@ RULES: tuple[Rule, ...] = (
        _WRITE + r"[^\n]*" + _ABS + r"(?:/etc/(?:pam\.d|ssh|ld\.so\.conf|profile|bash\.bashrc|environment|rc\.local|init\.d|crontab"
        r"|cron\.\w+|hosts|resolv\.conf|nsswitch\.conf|fstab|modules-load\.d|modprobe\.d|udev|security|pacman\.d)|/boot/|/usr/lib/security|/lib/security)",
        "Install hook edits sensitive system files", scope="install"),
-    # ---- info: weak hints ----
-    _r("eval", "info", r"\beval\b", "Uses eval", scope="code"),
+    # ---- caution: weak signals (kept as warnings: a miss is worse than a false alarm) ----
+    _r("eval", "caution", r"\beval\b", "Uses eval", scope="code"),
     _r("curl-in-substitution", "caution", _CS + r"(?:curl|wget)\b",
        "Downloads inside a command substitution (runs whenever the file is parsed)", scope="code"),
     _r("vcs-fetch", "caution",
@@ -379,9 +385,9 @@ RULES: tuple[Rule, ...] = (
        _CMD + r"(?:lftp|axel|tftp|ftp|sftp|gsutil|rclone|yt-dlp|youtube-dl|transmission-cli|wget2|ipfs|https?|xh"
        r"|git\s+lfs|gh\s+(?:release|repo|api)|aws\s+s3|az\s+storage)\s",
        "Uses a download tool at build time", scope="code"),
-    _r("setcap", "info", r"\bsetcap\b", "Grants file capabilities", scope="code"),
-    _r("world-writable", "info", r"\bchmod\s+(?:-\w+\s+)*(?:0?777|a\+rwx|ugo\+rwx|o\+w)\b", "Makes files world-writable", scope="code"),
-    _r("user-management", "info", r"\b(?:useradd|usermod|adduser|chpasswd|gpasswd)\b", "Creates or modifies system users", scope="code"),
+    _r("setcap", "caution", r"\bsetcap\b", "Grants file capabilities", scope="code"),
+    _r("world-writable", "caution", r"\bchmod\s+(?:-\w+\s+)*(?:0?777|a\+rwx|ugo\+rwx|o\+w)\b", "Makes files world-writable", scope="code"),
+    _r("user-management", "caution", r"\b(?:useradd|usermod|adduser|chpasswd|gpasswd)\b", "Creates or modifies system users", scope="code"),
 )
 
 _TOP_DANGER = re.compile(
@@ -406,21 +412,6 @@ def _applies(scope: str, name: str) -> bool:
     )
 
 
-def _logical_lines(text: str):
-    """Yield (first line number, line) joining backslash continuations."""
-    buf, start = "", 0
-    for number, line in enumerate(text.splitlines(), 1):
-        if not buf:
-            start = number
-        if line.endswith("\\"):
-            buf += line[:-1] + " "
-            continue
-        yield start, buf + line
-        buf = ""
-    if buf:
-        yield start, buf
-
-
 def _scan_lines(name: str, text: str) -> list[Finding]:
     rules = [r for r in RULES if _applies(r.scope, name)]
     findings: list[Finding] = []
@@ -432,11 +423,8 @@ def _scan_lines(name: str, text: str) -> list[Finding]:
             for r in rules
             if (r.comments or not is_comment) and r.pattern.search(stripped)
         ]
-        severities = {h.severity for h in hits}
-        if "danger" in severities:
+        if any(h.severity == "danger" for h in hits):
             hits = [h for h in hits if h.severity == "danger"]
-        elif "caution" in severities:
-            hits = [h for h in hits if h.severity != "info"]
         findings.extend(hits)
     return findings
 
@@ -665,6 +653,23 @@ def dependencies(files: dict[str, str]) -> list[str]:
     return names
 
 
+# Files whose content is data, not code that runs. Everything else is a script (or something
+# unknown) that is only pattern-checked, never understood, so it is reported.
+DATA_EXTENSIONS = (
+    ".service", ".socket", ".timer", ".path", ".target", ".mount", ".desktop", ".conf", ".cfg", ".ini", ".toml",
+    ".yaml", ".yml", ".json", ".xml", ".txt", ".md", ".rst", ".sysusers", ".tmpfiles", ".rules", ".hook", ".patch",
+    ".diff", ".install", ".gitignore", ".srcinfo", ".svg", ".po", ".pot", ".html", ".css", ".1", ".5", ".8",
+)
+DATA_NAME_PREFIXES = ("pkgbuild", "license", "copying", "readme", "news", "changelog", "authors", ".srcinfo", ".gitignore", ".nvchecker")
+
+
+def _file_gap(name: str) -> list[Finding]:
+    base = name.rsplit("/", 1)[-1].lower()
+    if base.startswith(DATA_NAME_PREFIXES) or base.endswith(DATA_EXTENSIONS):
+        return []
+    return [Finding("caution", f"Script or unrecognised file shipped in the repository; only pattern-checked, not understood: {name}", name, None, "unanalyzed-file")]
+
+
 def _correlate(name: str, findings: list[Finding]) -> list[Finding]:
     """Escalate combinations that are each only suspicious: fetch something, then run it from /tmp."""
     rules = {f.rule for f in findings}
@@ -681,23 +686,30 @@ def scan(files: dict[str, str], package: str | None = None) -> list[Finding]:
         if name == "(omitted-files)":
             findings.extend(_scan_omitted(text))
             continue
-        found = _scan_lines(name, text) + _scan_anomalies(name, text)
-        if TRUNCATED_MARKER in text:
-            found.append(Finding("caution", "File is larger than the review limit; only its beginning was reviewed", name, None, "truncated-file"))
-        if name.rsplit("/", 1)[-1] == ".gitmodules":
-            found.append(Finding("caution", "Git submodules pull in external code that this review does not cover", name, None, "git-submodules"))
-        if name == "PKGBUILD":
-            found += _scan_pkgbuild(name, text)
-        if name == "PKGBUILD" or name.endswith(".install"):
-            found += _scan_toplevel(name, text)
+        found: list[Finding] = []
+        try:
+            found += _scan_lines(name, text)
+            found += _scan_anomalies(name, text)
+            if TRUNCATED_MARKER in text:
+                found.append(Finding("caution", "File is larger than the review limit; only its beginning was reviewed", name, None, "truncated-file"))
+            if name.rsplit("/", 1)[-1] == ".gitmodules":
+                found.append(Finding("caution", "Git submodules pull in external code that this review does not cover", name, None, "git-submodules"))
+            if name == "PKGBUILD":
+                found += _scan_pkgbuild(name, text)
+            if name == "PKGBUILD" or name.endswith(".install"):
+                found += _scan_toplevel(name, text)
+                flagged_lines = {f.line for f in found if f.severity == "danger" or f.rule == "toplevel-exec"}
+                found += [f for f in scan_strict(name, text) if f.line not in flagged_lines]
+            found += _file_gap(name)
+        except Exception as exc:  # an analyzer bug or hostile input must never read as "nothing found"
+            found.append(Finding("caution", f"The analyzer failed on this file ({type(exc).__name__}), so it was not fully reviewed", name, None, "analyzer-error"))
         findings.extend(found + _correlate(name, found))
     return findings
 
 
 def level_of(findings: list[Finding]) -> str:
-    """Verdict level of the findings; `info` hints never raise it."""
+    """Verdict level of the findings: the worst severity present."""
     level = "safe"
     for finding in findings:
-        if finding.severity != "info":
-            level = worst(level, finding.severity)
+        level = worst(level, finding.severity)
     return level

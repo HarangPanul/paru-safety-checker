@@ -119,11 +119,17 @@ POSITIVE_CAUTION = {
     "path-hijack": ["export PATH=.:$PATH", "PATH=/tmp:$PATH"],
     "command-hijack": ["alias sudo='x'", "sudo() { x; }"],
     "ld-preload-env": ["export LD_PRELOAD=/x.so"],
+    "path-modification": ["export PATH=\"$srcdir/bin:$PATH\"", "PATH+=:x"],
+    "exec-env-var": ["export BASH_ENV=./x", "PYTHONPATH=build make", "NODE_OPTIONS=--require=./x.js npm x", "PROMPT_COMMAND=id"],
     "base64-decode": ["base64 -d f > g"],
     "long-encoded-blob": ["data=" + "A" * 250],
     "miner-software": ["cp xmrig /usr/bin"],
     "offensive-tools": ["install msfvenom"],
     "sudo": ["sudo make install", "make && sudo ln -s a b"],
+    "eval": ["eval $cmd"],
+    "setcap": ["setcap cap_net_raw+ep foo"],
+    "world-writable": ["chmod 777 foo"],
+    "user-management": ["useradd -r foo"],
     "setuid": ["chmod 4755 foo", "chmod u+s foo"],
     "chattr-immutable": ["chattr +i /x"],
     "priv-group": ["usermod -aG wheel bob", "gpasswd -a bob docker"],
@@ -166,12 +172,6 @@ INSTALL_CAUTION = {
     "install-system-files": ["echo x >> /etc/pam.d/login", "cp x /etc/ssh/sshd_config", "cp x /boot/y", "sed -i s/a/b/ /etc/hosts"],
 }
 
-INFO = {
-    "eval": ["eval $cmd"],
-    "setcap": ["setcap cap_net_raw+ep foo"],
-    "world-writable": ["chmod 777 foo"],
-    "user-management": ["useradd -r foo"],
-}
 
 
 @pytest.mark.parametrize("rule,line", [(r, l) for r, lines in POSITIVE.items() for l in lines])
@@ -195,16 +195,8 @@ def test_install_hook_rule_fires(rule, line):
     assert hits[0].severity == "caution"
 
 
-@pytest.mark.parametrize("rule,line", [(r, l) for r, lines in INFO.items() for l in lines])
-def test_info_rule_fires_without_raising_the_verdict(rule, line):
-    findings = scan(in_function(line))
-    assert any(f.rule == rule and f.severity == "info" for f in findings)
-    if all(f.severity == "info" for f in findings):
-        assert level_of(findings) == "safe"
-
-
 def test_every_rule_has_a_test():
-    covered = set(POSITIVE) | set(POSITIVE_CAUTION) | set(INSTALL_CAUTION) | set(INFO)
+    covered = set(POSITIVE) | set(POSITIVE_CAUTION) | set(INSTALL_CAUTION)
     assert {r.id for r in RULES} - covered == set()
 
 
@@ -229,7 +221,6 @@ CLEAN_LINES = [
     "python -m installer --destdir=\"$pkgdir\" dist/*.whl",
     "cargo install --offline --locked --root \"$pkgdir/usr\" --path .",
     "python setup.py build",
-    "export PATH=\"./node_modules/.bin:$PATH\"",
     "cd \"$srcdir/foo-$pkgver\"",
     "gpg --verify foo.sig foo.tar.gz",
     "echo \"$pkgver\" | sha256sum",
@@ -239,9 +230,6 @@ CLEAN_LINES = [
     "tar xf \"$srcdir/foo.tar.xz\" -C \"$srcdir\"",
     "xdg-icon-resource install foo.png",
     "echo 'rev-parse' | grep -q rev-parse",
-    "nc -h > /dev/null 2>&1",
-    "dd if=/dev/zero of=\"$srcdir/img\" bs=1M count=10",
-    "mount -o bind a b",
     "uname -m",
     "uid=$(id -u)",
     "unzip -q foo.zip -d \"$srcdir\"",
@@ -321,9 +309,9 @@ def test_omitted_files_binary_symlink_and_limit():
     assert run(["big (total size limit)"]) == {"incomplete": "caution"}
 
 
-def test_danger_drops_lower_severities_and_caution_drops_info_on_the_same_line():
+def test_danger_drops_lower_severities_on_the_same_line():
     assert {f.rule for f in scan(in_function("eval \"$(curl https://x)\""))} == {"pipe-to-shell"}
-    assert {f.rule for f in scan(in_function("sudo eval x"))} == {"sudo"}
+    assert {"sudo", "eval"} <= {f.rule for f in scan(in_function("sudo eval x"))}
 
 
 def test_collect_files_reports_symlinks(tmp_path):

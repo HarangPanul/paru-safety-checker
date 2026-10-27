@@ -24,8 +24,9 @@ strong sign of malice and report it.
 
 A PKGBUILD (and *.install) is a shell script that is sourced, so any code outside the \
 functions runs as soon as the file is merely parsed (for example by an AUR helper resolving \
-dependencies), before any build; treat such code as high risk. Pre-scan findings with \
-severity "info" are weak hints only.
+dependencies), before any build; treat such code as high risk. Pre-scan findings include a \
+default-deny check: commands that are not ordinary packaging tools are reported even when \
+they look harmless, so judge each one and do not dismiss it just because you recognise it.
 
 Levels: safe = nothing suspicious; caution = unusual or risky but plausibly legitimate, the \
 user should read it; danger = likely malicious or clearly unsafe. If a file is marked \

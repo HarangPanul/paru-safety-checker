@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 LEVELS = ("safe", "caution", "danger")
-# "info" is a hint for the reviewer only: it never changes the verdict level.
-SEVERITIES = ("info",) + LEVELS
 
 VERDICT_SCHEMA = {
     "type": "object",
@@ -16,7 +14,7 @@ VERDICT_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "severity": {"type": "string", "enum": list(SEVERITIES)},
+                    "severity": {"type": "string", "enum": list(LEVELS)},
                     "message": {"type": "string"},
                     "file": {"type": "string"},
                     "line": {"type": "integer"},
@@ -56,7 +54,7 @@ class Verdict:
         findings = []
         for raw in data.get("findings", []):
             severity = raw["severity"]
-            if severity not in SEVERITIES:
+            if severity not in LEVELS:
                 raise ValueError(f"unknown severity: {severity!r}")
             line = raw.get("line")
             findings.append(

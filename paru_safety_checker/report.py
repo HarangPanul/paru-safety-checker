@@ -4,7 +4,7 @@ import sys
 
 from .models import Verdict
 
-COLORS = {"safe": "32", "caution": "33", "danger": "31", "info": "36"}
+COLORS = {"safe": "32", "caution": "33", "danger": "31"}
 
 
 def _paint(text: str, level: str) -> str:
