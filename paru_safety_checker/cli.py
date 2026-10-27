@@ -8,6 +8,7 @@ from .activity import build_activity, format_activity, inventory_for_ai
 from .fetch import FetchError, fetch_package_files
 from .heuristics import dependencies, level_of, scan
 from .models import Finding, Verdict, worst
+from .preprocess import preprocess, render
 from .providers import Provider, ProviderError, make_provider
 from .report import format_verdict
 
@@ -96,7 +97,7 @@ def main(
                 provider = make_provider()
             # The AI looks for what the scanner could not anticipate. It runs even when the
             # scanner already found something, because nothing here blocks the install.
-            ai = provider.analyze(package, files, static, inventory=inventory_for_ai(activities))
+            ai = provider.analyze(package, files_for_ai(files), static, inventory=inventory_for_ai(activities))
             # it can only raise the level; findings it lists count even if its headline says "safe"
             level_now = worst(worst(verdict.level, ai.level), level_of(ai.findings))
             verdict = Verdict(level_now, ai.summary, static + ai.findings)
@@ -118,6 +119,21 @@ def main(
         if not _confirm(ask, "Review the findings above. Continue? [y/N] "):
             return 1
     return runner(args)
+
+
+def files_for_ai(files: dict[str, str]) -> dict[str, str]:
+    """What the model reads: shell files preprocessed (comments removed, one command per line, every line
+    prefixed with its original line number), everything else as it is. Comment text is still checked by the
+    scanner, but it never reaches the model, so it cannot be used to talk to it."""
+    shown: dict[str, str] = {}
+    for name, text in files.items():
+        if name == "PKGBUILD" or name.endswith(".install"):
+            pre = preprocess(text)
+            note = f"\n[{len(pre.comments)} comment line(s) removed]" if pre.comments else ""
+            shown[name] = render(pre) + note
+        else:
+            shown[name] = text
+    return shown
 
 
 def _dependency_findings(package: str, files: dict[str, str], targets: list[str], dep_ok: Callable[[str], bool]) -> list[Finding]:

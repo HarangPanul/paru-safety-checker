@@ -93,3 +93,39 @@ inherits its limits, and it adds some of its own:
 - **Routine operations are collapsed by default** (count only; `--safe-verbose` lists them).
   The decision of what is routine is purely by path (inside `$srcdir`/`$pkgdir`/relative).
 - **Nothing is reported about what the downloaded sources do** (see issue 2).
+
+## 8. The preprocessor and bash still disagree on rare input
+
+`preprocess.py` reads shell the way bash does, and every PKGBUILD / `*.install` is cross-checked
+against `bash --pretty-print` (which only parses, it never runs anything). Measured with random
+fragments, against bash's own parse:
+- 6,792 scripts that bash accepts, built from realistic fragments: 9 disagreements (0.13%).
+- about 5,000 scripts built from deliberately hostile fragments (`$'`, `<(`, `$((`, stray quotes):
+  21 disagreements (0.4%).
+- 300 structurally valid generated scripts (the test suite): 0 disagreements.
+
+Every disagreement is reported to the user as `parser-mismatch` (a warning), so the failure
+direction is safe, but the known causes are worth fixing:
+- **Here-document bodies with a backslash at the end of a line.** For an unquoted delimiter bash joins
+  the lines before it looks for the terminator; the scanner compares each line separately.
+- **`$'...'` strings.** bash prints them re-encoded (`\e` becomes `\E`, a newline becomes a quoted
+  newline), so scripts that use them can raise a mismatch that is only a difference in spelling.
+- **Constructs real PKGBUILDs almost never contain:** an array assignment inside `>(...)`, `case`
+  inside `$(...)`, `function f=(...)`.
+
+What the cross-check can and cannot see: it compares the multiset of words (`\w+` runs) with
+quoting, layout and structural keywords removed. It cannot see a different *order* of the same
+words, a difference made only of punctuation, or a word made only of digits (these are ignored on
+purpose because bash adds fd numbers to redirections).
+
+Other consequences of the design:
+- bash 4.4 or newer must be installed; without it every file gets a `crosscheck-unavailable` warning.
+- Only PKGBUILD and `*.install` are preprocessed. Other files (`.service`, helper scripts, patches)
+  are scanned line by line as before.
+- Newlines inside a quoted string are turned into spaces so that a command stays on one line, so the
+  analyzers see those strings with different whitespace than the file has.
+- The regex rules run on the one-command-per-line form **and** on the original statements with only
+  the comments removed (so that patterns that span `;`, such as a fork bomb, still match). A finding
+  is reported once per rule and line.
+- The text of removed comments is still checked by the rules that are about the reviewer (prompt
+  injection) but is never shown to the AI.

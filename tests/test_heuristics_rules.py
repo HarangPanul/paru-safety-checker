@@ -101,7 +101,7 @@ POSITIVE_CAUTION = {
     "raw-socket-connect": ["nc -w3 1.2.3.4 80", "telnet 1.2.3.4 23"],
     "listen-socket": ["nc -lvp 4444", "python3 -m http.server 8000", "socat TCP-LISTEN:80,fork -"],
     "dynamic-dns": ["host=evil.ddns.net", "url=x.duckdns.org"],
-    "tunnel-service": ["./ngrok http 80 # ngrok.io", "url=https://abc.trycloudflare.com"],
+    "tunnel-service": ["tunnel=abc.ngrok.io", "url=https://abc.trycloudflare.com"],
     "tor-onion": ["curl x.onion", "proxy=socks5h://127.0.0.1:9050"],
     "free-tld-url": ["url=https://evil.tk/x", "curl https://a.ml:8080/y"],
     "punycode-url": ["url=https://xn--pple-43d.com/x"],

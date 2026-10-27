@@ -158,7 +158,8 @@ def test_each_unknown_command_is_reported_once_per_file():
 def test_toplevel_code_and_parse_time_substitutions():
     text = "pkgname=x\nexport A=1\nif [ -f /etc/os-release ]; then\n  pkgname=y\nfi\nbuild() { :; }\n"
     findings = scan_strict("PKGBUILD", text)
-    assert {(f.rule, f.line) for f in findings} == {("toplevel-code", 3), ("toplevel-code", 5)}
+    # the condition runs at parse time; the assignment inside is a declaration; `if`/`fi` are not commands
+    assert {(f.rule, f.line) for f in findings} == {("toplevel-code", 3)}
     sub = "pkgver=$(date +%Y)\nsource=(\"x-$(uname -m).tgz\")\n"
     assert {f.rule for f in scan_strict("PKGBUILD", sub)} == {"parse-time-command"}
     assert [f.line for f in scan_strict("PKGBUILD", sub)] == [1, 2]

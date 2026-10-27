@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import shlex
 from dataclasses import dataclass
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from .fetch import TRUNCATED_MARKER
 from .models import Finding, worst
-from .strict import logical_lines as _logical_lines
+from . import crosscheck
+from .preprocess import Preprocessed, preprocess
 from .strict import scan_strict
 
 # Package / npm names from real incidents (Arch AUR notice, July 2025; npm payload campaign).
@@ -413,40 +415,80 @@ def _applies(scope: str, name: str) -> bool:
     )
 
 
+def _is_shell(name: str) -> bool:
+    return name == "PKGBUILD" or name.endswith(".install")
+
+
+def _plain_lines(text: str):
+    """(first line number, line) with backslash continuations joined; for files that are not shell."""
+    buf, start = "", 0
+    for number, line in enumerate(text.split("\n"), 1):
+        if not buf:
+            start = number
+        if line.endswith("\\"):
+            buf += line[:-1] + " "
+            continue
+        yield start, buf + line
+        buf = ""
+    if buf:
+        yield start, buf
+
+
 def _scan_lines(name: str, text: str) -> list[Finding]:
+    """Run the regex rules.
+
+    For shell files every rule sees each command on its own line (the preprocessed form) and also the
+    original statements with only the comments removed, so a pattern that spans `;` (a fork bomb,
+    `mkfifo f; nc ...`) still matches. Comments that were removed are still checked by the rules that
+    are about the reviewer (prompt injection), because that text is aimed at the AI, not at bash.
+    """
     rules = [r for r in RULES if _applies(r.scope, name)]
+    units: list[tuple[int, str, bool]] = []
+    removed_comments: tuple = ()
+    if _is_shell(name):
+        pre = preprocess(text)
+        for l in pre.lines:
+            if l.kind not in ("heredoc-end", "case-pattern"):
+                units.append((l.number, l.text, l.kind == "heredoc" and l.text.lstrip().startswith("#")))
+        units += [(n, t, t.lstrip().startswith("#")) for n, t in pre.statements]
+        removed_comments = pre.comments
+    else:
+        units = [(n, line, line.lstrip().startswith("#")) for n, line in _plain_lines(text)]
+
     findings: list[Finding] = []
-    for number, line in _logical_lines(text):
-        is_comment = line.lstrip().startswith("#")
+    seen: set[tuple[str, int]] = set()
+
+    def hit(rule: Rule, number: int, shown: str) -> None:
+        if (rule.id, number) not in seen:
+            seen.add((rule.id, number))
+            findings.append(Finding(rule.severity, f"{rule.message}: {shown[:120]}", name, number, rule.id))
+
+    for number, line, is_comment in units:
         stripped = line.strip()
-        hits = [
-            Finding(r.severity, f"{r.message}: {stripped[:120]}", name, number, r.id)
-            for r in rules
-            if (r.comments or not is_comment) and r.pattern.search(stripped)
-        ]
-        if any(h.severity == "danger" for h in hits):
-            hits = [h for h in hits if h.severity == "danger"]
-        findings.extend(hits)
-    return findings
+        for rule in rules:
+            if (rule.comments or not is_comment) and rule.pattern.search(stripped):
+                hit(rule, number, stripped)
+    for number, comment in removed_comments:
+        stripped = comment.strip()
+        for rule in rules:
+            if rule.comments and rule.pattern.search(stripped):
+                hit(rule, number, stripped)
+    danger_lines = {f.line for f in findings if f.severity == "danger"}
+    return [f for f in findings if f.severity == "danger" or f.line not in danger_lines]
 
 
 def _scan_toplevel(name: str, text: str) -> list[Finding]:
     """Code outside any function runs when the file is merely sourced (e.g. by an AUR helper
     resolving dependencies), long before a build is approved."""
     findings: list[Finding] = []
-    brace = paren = 0
-    for number, line in _logical_lines(text):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+    for line in preprocess(text).lines:
+        if line.region != "top" or line.kind not in ("command", "control"):
             continue
-        if brace == 0 and paren == 0:
-            if _TOP_DANGER.match(stripped):
-                findings.append(Finding("danger", f"Runs at parse time, outside any function: {stripped[:120]}", name, number, "toplevel-exec"))
-            elif _TOP_CAUTION.match(stripped):
-                findings.append(Finding("caution", f"Runs at parse time, outside any function: {stripped[:120]}", name, number, "toplevel-exec"))
-        bare = re.sub(r"'[^']*'|\"[^\"]*\"", "", re.sub(r"\s#.*$", "", stripped))
-        brace = max(0, brace + bare.count("{") - bare.count("}"))
-        paren = max(0, paren + bare.count("(") - bare.count(")"))
+        shown = line.text[:120]
+        if _TOP_DANGER.match(line.text):
+            findings.append(Finding("danger", f"Runs at parse time, outside any function: {shown}", name, line.number, "toplevel-exec"))
+        elif _TOP_CAUTION.match(line.text):
+            findings.append(Finding("caution", f"Runs at parse time, outside any function: {shown}", name, line.number, "toplevel-exec"))
     return findings
 
 
@@ -469,47 +511,32 @@ def _scan_anomalies(name: str, text: str) -> list[Finding]:
     return findings
 
 
-def _arrays(text: str):
-    """Yield (name, appends, body, line) for every `name=(...)` / `name+=(...)`.
-
-    Quote- and nesting-aware: `source=("$(true)" 'http://evil/x')` must not end at the first `)`.
-    """
-    for match in re.finditer(r"^[ \t]*(\w+)(\+?)=\(", text, re.M):
-        i, depth, quote = match.end(), 1, ""
-        while i < len(text) and depth:
-            c = text[i]
-            if quote:
-                if c == "\\" and quote == '"':
-                    i += 1
-                elif c == quote:
-                    quote = ""
-            elif c in "'\"":
-                quote = c
-            elif c == "\\":
-                i += 1
-            elif c == "#" and text[i - 1].isspace():
-                newline = text.find("\n", i)
-                i = len(text) if newline < 0 else newline
-            elif c == "(":
-                depth += 1
-            elif c == ")":
-                depth -= 1
-            i += 1
-        end = i - 1 if depth == 0 else i
-        yield match.group(1), bool(match.group(2)), text[match.end():end], text.count("\n", 0, match.start()) + 1
+ARRAY_LINE = re.compile(r"^[A-Za-z_]\w*(?:\[[^\]]*\])?(\+?)=\((.*)\)\s*$", re.S)
+ARRAY_NAME = re.compile(r"^([A-Za-z_]\w*)")
 
 
 def _array_items(body: str) -> list[str]:
-    body = re.sub(r"(?m)(^|\s)#.*$", "", body)
-    return [t.strip("'\"") for t in re.findall(r"'[^']*'|\"[^\"]*\"|\S+", body)]
+    try:
+        return shlex.split(body)
+    except ValueError:
+        return [t.strip("'\"") for t in re.findall(r"'[^']*'|\"[^\"]*\"|\S+", body)]
 
 
-def _variables(text: str) -> dict[str, str]:
-    """Literal one-line assignments (`url="https://..."`), used to expand $url in source arrays."""
+def _variables(source) -> dict[str, str]:
+    """Literal assignments (`url="https://..."`), used to expand $url in source arrays."""
+    pre = source if isinstance(source, Preprocessed) else preprocess(source)
     found: dict[str, str] = {}
-    for match in re.finditer(r"^\s*(\w+)=([\"']?)([^\"'\n]*)\2\s*(?:#.*)?$", text, re.M):
-        if "$(" not in match.group(3) and "`" not in match.group(3):
-            found.setdefault(match.group(1), match.group(3))
+    for line in pre.lines:
+        if line.kind != "assignment" or "$(" in line.text or "`" in line.text:
+            continue
+        try:
+            words = shlex.split(line.text)
+        except ValueError:
+            continue
+        for word in words:
+            match = re.match(r"^(\w+)=(.*)$", word, re.S)
+            if match:
+                found.setdefault(match.group(1), match.group(2))
     return found
 
 
@@ -526,14 +553,28 @@ def _expand(value: str, variables: dict[str, str]) -> str:
     return value
 
 
-def _collect_arrays(text: str) -> dict[str, tuple[list[str], int]]:
-    """name -> (items, line) for every array, with `+=` appends merged."""
+def _definitions(source):
+    """(name, appends, items, line) for every array assignment, in file order, nothing merged."""
+    pre = source if isinstance(source, Preprocessed) else preprocess(source)
+    for line in pre.lines:
+        if line.kind != "array":
+            continue
+        match, name = ARRAY_LINE.match(line.text), ARRAY_NAME.match(line.text)
+        if match and name:
+            yield name.group(1), bool(match.group(1)), _array_items(match.group(2)), line.number
+
+
+def _collect_arrays(source, overridden: list | None = None) -> dict[str, tuple[list[str], int]]:
+    """name -> (items, line) as makepkg would see it: `+=` appends, a later `=` replaces. The values that
+    were replaced are appended to `overridden` as (name, items, line), because a replaced source is
+    still something the author wrote and must not escape review."""
     arrays: dict[str, tuple[list[str], int]] = {}
-    for key, appends, body, line in _arrays(text):
-        items = _array_items(body)
+    for key, appends, items, number in _definitions(source):
         if appends and key in arrays:
-            items, line = arrays[key][0] + items, arrays[key][1]
-        arrays[key] = (items, line)
+            items, number = arrays[key][0] + items, arrays[key][1]
+        elif key in arrays and overridden is not None:
+            overridden.append((key, *arrays[key]))
+        arrays[key] = (items, number)
     return arrays
 
 
@@ -547,10 +588,11 @@ class SourceEntry(NamedTuple):
 
 def source_entries(text: str) -> list[SourceEntry]:
     """Every remote source of a PKGBUILD, with what is known about its integrity."""
-    arrays = _collect_arrays(text)
+    replaced: list = []
+    arrays = _collect_arrays(text, replaced)
     variables = _variables(text)
     entries: list[SourceEntry] = []
-    for key, (items, _) in arrays.items():
+    for key, (items, _) in list(arrays.items()) + [(k, (i, n)) for k, i, n in replaced]:
         if not (key == "source" or key.startswith("source_")):
             continue
         suffix = key[len("source"):]
@@ -578,7 +620,9 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     sources: dict[str, list[str]] = {}
     sums: list[tuple[str, list[str], int]] = []
-    arrays = _collect_arrays(text)
+    replaced: list = []
+    arrays = _collect_arrays(text, replaced)
+    replaced_sources = [i for k, i, _ in replaced if k == "source" or k.startswith("source_")]
     for key, (items, line) in arrays.items():
         if key == "source" or key.startswith("source_"):
             sources[key[len("source"):]] = items
@@ -587,7 +631,7 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
 
     variables = _variables(text)
     remote_non_vcs: list[str] = []
-    for items in sources.values():
+    for items in list(sources.values()) + replaced_sources:
         for item in items:
             url = _expand(item, variables).split("::", 1)[-1]
             if "://" not in url:
@@ -642,10 +686,12 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
         if core:
             findings.append(Finding("caution", f"Replaces core system package(s): {', '.join(core)}", name, line, "replaces-core"))
 
-    for match in re.finditer(r"^\s*pkgname=\(?['\"]?([\w@.+-]+)", text, re.M):
-        if re.search(r"-(?:fix|fixed|patch|patched|crack|cracked)(?:-bin|-git)?$", match.group(1)):
-            line = text.count("\n", 0, match.start()) + 1
-            findings.append(Finding("caution", f"Name suggests an unofficial patched/cracked variant: {match.group(1)}", name, line, "impersonation-name"))
+    names = list(arrays["pkgname"][0]) if "pkgname" in arrays else []
+    if "pkgname" in variables:
+        names.append(variables["pkgname"])
+    for pkgname in names:
+        if re.search(r"-(?:fix|fixed|patch|patched|crack|cracked)(?:-bin|-git)?$", pkgname):
+            findings.append(Finding("caution", f"Name suggests an unofficial patched/cracked variant: {pkgname}", name, _line_of(text, "pkgname"), "impersonation-name"))
     return findings
 
 
@@ -682,10 +728,10 @@ def dependencies(files: dict[str, str]) -> list[str]:
     text = files.get("PKGBUILD", "")
     variables = _variables(text)
     names: list[str] = []
-    for key, _, body, _ in _arrays(text):
+    for key, _, items, _ in _definitions(text):
         if not _DEP_KEY.match(key):
             continue
-        for item in _array_items(body):
+        for item in items:
             dep = re.split(r"[<>=:]", _expand(item, variables))[0].strip()
             if dep and "$" not in dep and dep not in names:
                 names.append(dep)
@@ -735,7 +781,12 @@ def scan(files: dict[str, str], package: str | None = None) -> list[Finding]:
                 found.append(Finding("caution", "Git submodules pull in external code that this review does not cover", name, None, "git-submodules"))
             if name == "PKGBUILD":
                 found += _scan_pkgbuild(name, text)
-            if name == "PKGBUILD" or name.endswith(".install"):
+            if _is_shell(name):
+                pre = preprocess(text)
+                if not pre.ok:
+                    found.append(Finding("caution", f"Shell that could not be parsed ({pre.error}); it was read as plain text", name, None, "unparseable-shell"))
+                found += [Finding("caution", note, name, None, "heredoc-unterminated") for note in pre.notes]
+                found += crosscheck.crosscheck(name, text, pre)
                 found += _scan_toplevel(name, text)
                 flagged_lines = {f.line for f in found if f.severity == "danger" or f.rule == "toplevel-exec"}
                 found += [f for f in scan_strict(name, text) if f.line not in flagged_lines]
