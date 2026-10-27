@@ -4,20 +4,21 @@ import subprocess
 import sys
 from typing import Callable
 
+from .activity import build_activity, format_activity, inventory_for_ai
 from .fetch import FetchError, fetch_package_files
 from .heuristics import dependencies, level_of, scan
 from .models import Finding, Verdict, worst
 from .providers import Provider, ProviderError, make_provider
 from .report import format_verdict
 
-FORCE_FLAG = "--safe-force"
+VERBOSE_FLAG = "--safe-verbose"
 # -S sub-operations that do not build/install anything
 NON_INSTALL_SYNC = set("sigclpw")
 
 
 def split_args(argv: list[str]) -> tuple[list[str], bool]:
     """Strip our own flags; the rest is forwarded to paru unchanged."""
-    return [a for a in argv if a != FORCE_FLAG], FORCE_FLAG in argv
+    return [a for a in argv if a != VERBOSE_FLAG], VERBOSE_FLAG in argv
 
 
 def install_targets(args: list[str]) -> list[str]:
@@ -67,7 +68,7 @@ def main(
     runner: Callable[[list[str]], int] = run_paru,
     ask: Callable[[str], str] = input,
 ) -> int:
-    args, force = split_args(sys.argv[1:] if argv is None else argv)
+    args, verbose = split_args(sys.argv[1:] if argv is None else argv)
     targets = install_targets(args)
     if not targets:
         return runner(args)
@@ -85,38 +86,36 @@ def main(
             continue
         if files is None:
             continue  # not an AUR package; paru will report it
+
         static = scan(files, package) + _dependency_findings(package, files, targets, dep_ok)
-        static_level = level_of(static)
-        if static_level == "danger":
-            # No need to spend an AI call: the rules already block this package.
-            verdict = Verdict("danger", "Rule-based scan found dangerous patterns (AI review skipped)", static)
-        else:
-            try:
-                if provider is None:
-                    provider = make_provider()
-                ai = provider.analyze(package, files, static)
-            except ProviderError as exc:
-                _err(f"[paru-safe] analysis failed for {package}: {exc}")
-                unchecked.append(package)
-                continue
-            # the AI can only raise the level; findings it lists count even if its headline says "safe"
-            level_now = worst(worst(static_level, ai.level), level_of(ai.findings))
+        activities = build_activity(files)
+        _err(format_activity(package, activities, verbose))
+        verdict = Verdict(level_of(static), "Scanner findings only (AI review did not run)", static)
+        try:
+            if provider is None:
+                provider = make_provider()
+            # The AI looks for what the scanner could not anticipate. It runs even when the
+            # scanner already found something, because nothing here blocks the install.
+            ai = provider.analyze(package, files, static, inventory=inventory_for_ai(activities))
+            # it can only raise the level; findings it lists count even if its headline says "safe"
+            level_now = worst(worst(verdict.level, ai.level), level_of(ai.findings))
             verdict = Verdict(level_now, ai.summary, static + ai.findings)
+        except ProviderError as exc:
+            _err(f"[paru-safe] AI analysis failed for {package}: {exc}")
+            unchecked.append(package)
         _err(format_verdict(package, verdict))
         level = worst(level, verdict.level)
 
-    if level == "danger" and not force:
-        _err(f"[paru-safe] refusing to install: dangerous package(s) found. Use {FORCE_FLAG} to override.")
-        return 1
+    # Nothing is ever refused: the user is warned and chooses. Riskier states need a typed "yes".
     if unchecked:
-        _err(f"[paru-safe] NOT reviewed (fail-closed): {', '.join(unchecked)}")
-        if not _confirm(ask, "Install without review? Type 'yes' to continue: ", exact="yes"):
+        _err(f"[paru-safe] NOT fully reviewed: {', '.join(unchecked)}")
+    if unchecked or level == "danger":
+        if level == "danger":
+            _err("[paru-safe] DANGER: at least one package was flagged as dangerous.")
+        if not _confirm(ask, "Install anyway? Type 'yes' to continue: ", exact="yes"):
             return 1
     elif level == "caution":
         if not _confirm(ask, "Review the findings above. Continue? [y/N] "):
-            return 1
-    elif level == "danger":
-        if not _confirm(ask, "Package flagged DANGER. Type 'yes' to install anyway: ", exact="yes"):
             return 1
     return runner(args)
 

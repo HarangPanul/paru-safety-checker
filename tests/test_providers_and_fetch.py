@@ -106,5 +106,12 @@ def test_valid_package_name(name, ok):
 
 def test_prompt_includes_prescan_findings():
     from paru_safety_checker.models import Finding
-    prompt = build_user_prompt("foo", {"PKGBUILD": "x"}, [Finding("caution", "uses sudo", "PKGBUILD", 3, "sudo")])
-    assert "pre-scan findings" in prompt and "[caution] sudo PKGBUILD:3" in prompt
+    prompt = build_user_prompt("foo", {"PKGBUILD": "x"}, [Finding("caution", "uses sudo", "PKGBUILD", 3, "sudo")],
+                               inventory="[network] PKGBUILD:2 downloads source https://x")
+    assert "Scanner findings already reported" in prompt and "[caution] sudo PKGBUILD:3" in prompt
+    assert "Scanner inventory" in prompt and "downloads source https://x" in prompt
+
+
+def test_system_prompt_gives_the_ai_the_novel_techniques_job():
+    from paru_safety_checker.prompt import SYSTEM_PROMPT
+    assert "NEW techniques" in SYSTEM_PROMPT and "cannot lower" in SYSTEM_PROMPT

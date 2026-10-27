@@ -68,6 +68,7 @@ class Command(NamedTuple):
     name: str
     args: list[str]
     piped: bool
+    redirects: tuple = ()  # ((operator, target), ...) for > >> < etc.; heredoc bodies are not files
 
 
 def logical_lines(text: str):
@@ -235,11 +236,12 @@ def extract_commands(text: str, _depth: int = 0) -> tuple[list[Command], bool]:
         return [], False
 
     commands: list[Command] = []
-    segments: list[tuple[list[str], bool]] = []
+    segments: list[tuple[list[str], bool, list[tuple[str, str]]]] = []
     current: list[str] = []
+    redirects: list[tuple[str, str]] = []
     seg_piped = False
     open_parens = 0
-    skip_next = False
+    pending_op: str | None = None
     for token in tokens:
         if token in SEGMENT_OPS:
             if token == ")" and open_parens == 0:
@@ -249,33 +251,41 @@ def extract_commands(text: str, _depth: int = 0) -> tuple[list[Command], bool]:
                         segments.pop()
                     if segments:
                         segments.pop()
-                current = []
+                current, redirects = [], []
                 seg_piped = False
                 continue
             if token == "(":
                 open_parens += 1
             elif token == ")":
                 open_parens -= 1
-            if current:
-                segments.append((current, seg_piped))
-            current = []
+            if current or redirects:
+                segments.append((current, seg_piped, redirects))
+            current, redirects = [], []
             seg_piped = token in ("|", "|&")
             continue
         if token in REDIRECTS:
-            skip_next = True
+            pending_op = token
             if current and current[-1].isdigit():
                 current.pop()
             continue
-        if skip_next:
-            skip_next = False
+        if pending_op is not None:
+            if pending_op not in ("<<", "<<-", "<<<") and not re.fullmatch(r"\d+|-", token):
+                redirects.append((pending_op, token))
+            pending_op = None
             continue
         current.append(token)
-    if current:
-        segments.append((current, seg_piped))
+    if current or redirects:
+        segments.append((current, seg_piped, redirects))
 
     ok = True
-    for words, piped in segments:
-        commands.extend(_segment(words, piped))
+    for words, piped, segment_redirects in segments:
+        found = _segment(words, piped)
+        if segment_redirects:
+            if found:
+                found[0] = found[0]._replace(redirects=tuple(segment_redirects))
+            else:
+                found = [Command(":", [], piped, tuple(segment_redirects))]
+        commands.extend(found)
     for inner in subs:
         inner_commands, inner_ok = extract_commands(inner, _depth + 1)
         commands.extend(inner_commands)
@@ -344,6 +354,68 @@ def classify(command: Command, allowed: frozenset[str], local_functions: set[str
     return "unknown-command", f"Command not on the allowlist (default-deny): {name}"
 
 
+class Step(NamedTuple):
+    """One logical line of a PKGBUILD / install script, already understood."""
+    line: int
+    text: str
+    top: bool                    # outside every function and array: runs when the file is parsed
+    in_function: bool
+    in_array: bool
+    toplevel_code: bool          # a top-level line that is not a plain declaration
+    commands: list               # commands inside functions
+    ok: bool                     # False if the shell could not be parsed
+    parse_time: list             # commands inside substitutions that run at parse time
+    parse_time_substitution: bool
+    heredoc: bool                # the line opens a here-document
+
+
+def walk(text: str):
+    local_depth_brace = local_depth_paren = 0
+    heredoc: str | None = None
+    for number, line in logical_lines(text):
+        stripped = line.strip()
+        if heredoc is not None:
+            if stripped == heredoc:
+                heredoc = None
+            continue
+        if not stripped or stripped.startswith("#"):
+            continue
+        top = local_depth_brace == 0 and local_depth_paren == 0
+        in_function = local_depth_brace > 0
+        in_array = local_depth_paren > 0
+        body = stripped
+        if FUNCTION_DEF.match(body):
+            body = FUNCTION_DEF.sub("", body, count=1)
+        body = re.sub(r"^function\s+[A-Za-z_][\w:.-]*\s*", "", body)
+
+        toplevel_code = bool(
+            top and body and not re.match(r"^(?:(?:export|declare|readonly|unset)\b|[A-Za-z_]\w*\+?=|\{|\}|\))", body)
+        )
+        parse_time: list[Command] = []
+        has_sub = False
+        if top or in_array:
+            _, subs = strip_substitutions(body)
+            has_sub = bool(subs)
+            for inner in subs:
+                parse_time.extend(extract_commands(inner)[0])
+        commands: list[Command] = []
+        ok = True
+        if in_function and body and not body.startswith(("{", "}")):
+            commands, ok = extract_commands(body)
+        opens_heredoc = bool(HEREDOC.search(body))
+        yield Step(number, stripped, top, in_function, in_array, toplevel_code, commands, ok, parse_time, has_sub, opens_heredoc)
+        if (in_function or top) and opens_heredoc:
+            heredoc = HEREDOC.search(body).group(2)
+
+        bare = re.sub(r"'[^']*'|\"[^\"]*\"", "", re.sub(r"\s#.*$", "", stripped))
+        local_depth_brace = max(0, local_depth_brace + bare.count("{") - bare.count("}"))
+        local_depth_paren = max(0, local_depth_paren + bare.count("(") - bare.count(")"))
+
+
+def normalise(name: str) -> str:
+    return _normalise(name)
+
+
 def scan_strict(name: str, text: str) -> list[Finding]:
     allowed = HOOK_ALLOWED if name.endswith(".install") else BUILD_ALLOWED
     local_functions = set(re.findall(r"^\s*(?:function\s+)?([A-Za-z_][\w:.-]*)\s*\(\s*\)", text, re.M))
@@ -356,49 +428,21 @@ def scan_strict(name: str, text: str) -> list[Finding]:
             seen.add((rule, key))
             findings.append(Finding("caution", message, name, line, rule))
 
-    brace = paren = 0
-    heredoc: str | None = None
-    for number, line in logical_lines(text):
-        stripped = line.strip()
-        if heredoc is not None:
-            if stripped == heredoc:
-                heredoc = None
-            continue
-        if not stripped or stripped.startswith("#"):
-            continue
-        top = brace == 0 and paren == 0
-        in_function = brace > 0
-        body = stripped
-        if FUNCTION_DEF.match(body):
-            body = FUNCTION_DEF.sub("", body, count=1)
-        body = re.sub(r"^function\s+[A-Za-z_][\w:.-]*\s*", "", body)
-
-        if top and body and not re.match(r"^(?:(?:export|declare|readonly|unset)\b|[A-Za-z_]\w*\+?=|\{|\}|\))", body):
-            add("toplevel-code", f"Code outside any function runs when the file is merely parsed: {stripped[:100]}", number, str(number))
-        if top or paren > 0:
-            _, subs = strip_substitutions(body)
-            for inner in subs:
-                commands, _ = extract_commands(inner)
-                label = commands[0].name if commands else inner.strip()[:30]
-                add("parse-time-command", f"A command substitution runs at parse time ({label}): {stripped[:100]}", number, str(number))
-        if in_function and body and not body.startswith(("{", "}")):
-            commands, ok = extract_commands(body)
-            if not ok:
-                add("unparseable-shell", f"Shell that could not be parsed, so it was not reviewed: {stripped[:100]}", number, str(number))
-            heredoc_match = HEREDOC.search(body)
-            for command in commands:
+    for step in walk(text):
+        shown = step.text[:100]
+        if step.toplevel_code:
+            add("toplevel-code", f"Code outside any function runs when the file is merely parsed: {shown}", step.line, str(step.line))
+        if step.parse_time_substitution:
+            label = step.parse_time[0].name if step.parse_time else "?"
+            add("parse-time-command", f"A command substitution runs at parse time ({label}): {shown}", step.line, str(step.line))
+        if step.in_function and step.commands or not step.ok:
+            if not step.ok:
+                add("unparseable-shell", f"Shell that could not be parsed, so it was not reviewed: {shown}", step.line, str(step.line))
+            for command in step.commands:
                 verdict = classify(command, allowed, local_functions)
                 if verdict:
                     rule, message = verdict
-                    add(rule, f"{message}: {stripped[:100]}", number, command.name if rule == "unknown-command" else str(number))
-                elif heredoc_match and INTERPRETERS.match(_normalise(command.name)):
-                    add("inline-code", f"{command.name} receives its program from a here-document: {stripped[:100]}", number, str(number))
-        if in_function or top:
-            match = HEREDOC.search(body)
-            if match:
-                heredoc = match.group(2)
-
-        bare = re.sub(r"'[^']*'|\"[^\"]*\"", "", re.sub(r"\s#.*$", "", stripped))
-        brace = max(0, brace + bare.count("{") - bare.count("}"))
-        paren = max(0, paren + bare.count("(") - bare.count(")"))
+                    add(rule, f"{message}: {shown}", step.line, command.name if rule == "unknown-command" else str(step.line))
+                elif step.heredoc and INTERPRETERS.match(_normalise(command.name)):
+                    add("inline-code", f"{command.name} receives its program from a here-document: {shown}", step.line, str(step.line))
     return findings

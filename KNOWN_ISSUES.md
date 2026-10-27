@@ -66,3 +66,23 @@ The regex rules and the allowlist are best effort. An allowlisted command can st
 through its arguments in ways nobody has listed yet (this already happened with `sed ... e`,
 `find -fprint`, `tar --to-command` and `git config alias`, now covered). Treat "no findings"
 as "nothing recognised", not as "proven safe".
+
+## 7. The activity report is approximate
+
+`activity.py` builds the report from the same shell parse as the default-deny check, so it
+inherits its limits, and it adds some of its own:
+- **File verbs come from a table of known tools** (`cp`, `mv`, `install`, `rm`, `sed -i`, ...).
+  Anything else is reported as a read. A tool that writes through an option nobody listed is
+  shown with the wrong verb, but its path is still shown.
+- **Bare relative names such as `cp a b` are not listed.** They are treated as routine, which
+  is only true while nothing outside the build directory is reached through them (a symlink in
+  the sources, for example). Inside install hooks bare names are listed, because hooks run
+  against the live system.
+- **Option values are mostly ignored** (`--prefix=/usr`, `-DCMAKE_INSTALL_PREFIX=/usr`) because
+  they are configuration, not file access. Only output and destination options (`-o`, `-t`,
+  `--destdir`, `DESTDIR=`, ...) are reported.
+- **Only PKGBUILD and `*.install` are parsed.** Helper scripts shipped in the repository are
+  flagged as `unanalyzed-file` but their activity is not listed.
+- **Routine operations are collapsed by default** (count only; `--safe-verbose` lists them).
+  The decision of what is routine is purely by path (inside `$srcdir`/`$pkgdir`/relative).
+- **Nothing is reported about what the downloaded sources do** (see issue 2).

@@ -11,6 +11,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from dataclasses import dataclass
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from .fetch import TRUNCATED_MARKER
@@ -525,6 +526,49 @@ def _expand(value: str, variables: dict[str, str]) -> str:
     return value
 
 
+def _collect_arrays(text: str) -> dict[str, tuple[list[str], int]]:
+    """name -> (items, line) for every array, with `+=` appends merged."""
+    arrays: dict[str, tuple[list[str], int]] = {}
+    for key, appends, body, line in _arrays(text):
+        items = _array_items(body)
+        if appends and key in arrays:
+            items, line = arrays[key][0] + items, arrays[key][1]
+        arrays[key] = (items, line)
+    return arrays
+
+
+class SourceEntry(NamedTuple):
+    url: str        # after expanding simple variables
+    line: int
+    vcs: bool
+    pinned: bool    # VCS source fixed to #commit= or #tag= (always True for plain downloads)
+    checksum: str   # "set", "SKIP" or "none"
+
+
+def source_entries(text: str) -> list[SourceEntry]:
+    """Every remote source of a PKGBUILD, with what is known about its integrity."""
+    arrays = _collect_arrays(text)
+    variables = _variables(text)
+    entries: list[SourceEntry] = []
+    for key, (items, _) in arrays.items():
+        if not (key == "source" or key.startswith("source_")):
+            continue
+        suffix = key[len("source"):]
+        sums = [v[0] for k, v in arrays.items() if (m := SUMS_RE.match(k)) and (m.group(1) or "") == suffix]
+        for index, item in enumerate(items):
+            url = _expand(item, variables).split("::", 1)[-1]
+            if "://" not in url or url.startswith("file://"):
+                continue
+            vcs = url.startswith(VCS_PREFIXES)
+            if not sums:
+                checksum = "none"
+            else:
+                values = [arr[index] for arr in sums if index < len(arr)]
+                checksum = "SKIP" if values and all(v == "SKIP" for v in values) else ("set" if values else "none")
+            entries.append(SourceEntry(url, _line_of(text, item), vcs, (not vcs) or bool(re.search(r"#(?:commit|tag)=", url)), checksum))
+    return entries
+
+
 def _line_of(text: str, needle: str) -> int:
     index = text.find(needle)
     return text.count("\n", 0, index) + 1 if index >= 0 else 0
@@ -532,14 +576,9 @@ def _line_of(text: str, needle: str) -> int:
 
 def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
-    arrays: dict[str, tuple[list[str], int]] = {}
     sources: dict[str, list[str]] = {}
     sums: list[tuple[str, list[str], int]] = []
-    for key, appends, body, line in _arrays(text):
-        items = _array_items(body)
-        if appends and key in arrays:
-            items, line = arrays[key][0] + items, arrays[key][1]
-        arrays[key] = (items, line)
+    arrays = _collect_arrays(text)
     for key, (items, line) in arrays.items():
         if key == "source" or key.startswith("source_"):
             sources[key[len("source"):]] = items

