@@ -10,15 +10,14 @@ from __future__ import annotations
 
 import ipaddress
 import re
-import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from .fetch import TRUNCATED_MARKER
 from .models import Finding, worst
-from . import crosscheck
-from .preprocess import Preprocessed, preprocess
+from . import cmdrules, crosscheck
+from .parsed import ParsedFile, collect_arrays, definitions, expand, literal_variables, parse
 from .strict import scan_strict
 
 # Package / npm names from real incidents (Arch AUR notice, July 2025; npm payload campaign).
@@ -48,11 +47,26 @@ class Rule:
     message: str
     scope: str = "all"  # all | code (not patches) | build (PKGBUILD & scripts) | install (*.install)
     comments: bool = False  # also match inside full-line comments
+    fallback: bool = False  # a structured twin in cmdrules.py covers this; the pattern runs only where parsing failed
+    risky: bool = False     # can take quadratic time on a long line (see MAX_PATTERN_LINE)
+
+
+# `A[^\n]*B` retries the gap once per `A`, so a line made of thousands of `A`s costs quadratic time.
+# A pattern with an open-ended gap is "risky" and is not run on lines longer than MAX_PATTERN_LINE.
+MAX_PATTERN_LINE = 2000
+WINDOW, WINDOW_STEP = 1000, 500     # used on long lines the parser could not read; a gap wider than WINDOW - WINDOW_STEP can split a match
+
+
+def _windows(text: str):
+    for start in range(0, max(len(text) - WINDOW, 0) + WINDOW_STEP, WINDOW_STEP):
+        yield text[start:start + WINDOW]
+_OPEN_GAP = re.compile(r"\[\^[^\]]*\][*+]|\.[*+]|\\S[*+]")
 
 
 def _r(id: str, severity: str, pattern: str, message: str, scope: str = "all",
-       comments: bool = False, flags: int = 0) -> Rule:
-    return Rule(id, severity, re.compile(pattern, flags), message, scope, comments)
+       comments: bool = False, flags: int = 0, fallback: bool = False) -> Rule:
+    return Rule(id, severity, re.compile(pattern, flags), message, scope, comments, fallback,
+                bool(_OPEN_GAP.search(pattern)))
 
 
 def _evasion(*words: str) -> str:
@@ -83,19 +97,24 @@ _SYSDIRS = r"(?:usr|etc|opt|bin|sbin|lib|lib64|boot|var|root|home|srv)"
 
 RULES: tuple[Rule, ...] = (
     # ---- danger: remote code execution and obfuscation ----
+    # The pipe forms (`curl x | sh`) are decided on the parsed pipeline in cmdrules.py; this pattern is the
+    # fallback for lines that could not be parsed. The forms below have no pipe to look at.
+    _r("pipe-to-shell", "danger", _FETCH + r"[^|]*\|\s*" + _RUN + _EXEC_STDIN,
+       "Downloads remote code and executes it directly", fallback=True),
     _r("pipe-to-shell", "danger",
-       _FETCH + r"[^|]*\|\s*" + _RUN + _EXEC_STDIN
-       + r"|\b" + _SH + r"\s[^\n]*<\(\s*(?:curl|wget|aria2c)\b"
+       r"\b" + _SH + r"\s[^\n]*<\(\s*(?:curl|wget|aria2c)\b"
        + r"|(?:^|[\s;&|(])(?:source|\.)\s+<\(\s*(?:curl|wget|aria2c)\b"
        + r"|\b" + _SH + r"\s+-c\s+[\"']?" + _CS + r"(?:curl|wget|aria2c)\b"
        + r"|\beval\b[^\n]*" + _CS + r"(?:curl|wget|aria2c)\b",
        "Downloads remote code and executes it directly"),
     _r("base64-exec", "danger",
-       r"\bbase64\s+(?:-d|--decode|-D)\b[^\n]*\|\s*" + _RUN + _SH + r"\b|\beval\b[^\n]*\bbase64\b",
-       "Decodes an obfuscated payload and executes it"),
+       r"\bbase64\s+(?:-d|--decode|-D)\b[^\n]*\|\s*" + _RUN + _SH + r"\b",
+       "Decodes an obfuscated payload and executes it", fallback=True),
+    _r("base64-exec", "danger", r"\beval\b[^\n]*\bbase64\b", "Decodes an obfuscated payload and executes it"),
+    _r("decode-exec", "danger", r"\b" + _DECODERS + r"\b[^|\n]*\|\s*" + _RUN + _SH + r"\b",
+       "Decodes or decompresses a hidden payload and executes it", fallback=True),
     _r("decode-exec", "danger",
-       r"\b" + _DECODERS + r"\b[^|\n]*\|\s*" + _RUN + _SH + r"\b"
-       + r"|\beval\b[^\n]*\b" + _DECODERS + r"\b"
+       r"\beval\b[^\n]*\b" + _DECODERS + r"\b"
        + r"|\b" + _SH + r"\s+-c\s+[^\n]*\b(?:base64|base32|xxd|rev(?![-\w]))\b",
        "Decodes or decompresses a hidden payload and executes it"),
     _r("scripted-download-exec", "danger",
@@ -393,6 +412,13 @@ RULES: tuple[Rule, ...] = (
     _r("user-management", "caution", r"\b(?:useradd|usermod|adduser|chpasswd|gpasswd)\b", "Creates or modifies system users", scope="code"),
 )
 
+# Rules decided on parsed commands in cmdrules.py. Their patterns above stay as the fallback for lines the
+# parser could not read, and for files that are not shell (a patch, a .hook).
+_PARTLY_STRUCTURED = frozenset({"pipe-to-shell", "base64-exec", "decode-exec"})
+RULES = tuple(
+    replace(r, fallback=True) if r.id in cmdrules.IDS - _PARTLY_STRUCTURED else r for r in RULES
+)
+
 _TOP_DANGER = re.compile(
     r"^(?:sudo\s+(?:-\S+\s+)*)?(?:curl|wget|aria2c|nc|ncat|netcat|socat|telnet|bash|sh|dash|zsh|python[\d.]*|perl|ruby|node|php|openssl)\b"
 )
@@ -419,42 +445,19 @@ def _is_shell(name: str) -> bool:
     return name == "PKGBUILD" or name.endswith(".install")
 
 
-def _plain_lines(text: str):
-    """(first line number, line) with backslash continuations joined; for files that are not shell."""
-    buf, start = "", 0
-    for number, line in enumerate(text.split("\n"), 1):
-        if not buf:
-            start = number
-        if line.endswith("\\"):
-            buf += line[:-1] + " "
-            continue
-        yield start, buf + line
-        buf = ""
-    if buf:
-        yield start, buf
+def _scan_lines(parsed: ParsedFile) -> list[Finding]:
+    """Run the pattern rules over the parsed lines, then the structured rules over the parsed commands.
 
-
-def _scan_lines(name: str, text: str) -> list[Finding]:
-    """Run the regex rules.
-
-    For shell files every rule sees each command on its own line (the preprocessed form) and also the
+    For shell files every pattern sees each command on its own line (the preprocessed form) and also the
     original statements with only the comments removed, so a pattern that spans `;` (a fork bomb,
     `mkfifo f; nc ...`) still matches. Comments that were removed are still checked by the rules that
     are about the reviewer (prompt injection), because that text is aimed at the AI, not at bash.
-    """
-    rules = [r for r in RULES if _applies(r.scope, name)]
-    units: list[tuple[int, str, bool]] = []
-    removed_comments: tuple = ()
-    if _is_shell(name):
-        pre = preprocess(text)
-        for l in pre.lines:
-            if l.kind not in ("heredoc-end", "case-pattern"):
-                units.append((l.number, l.text, l.kind == "heredoc" and l.text.lstrip().startswith("#")))
-        units += [(n, t, t.lstrip().startswith("#")) for n, t in pre.statements]
-        removed_comments = pre.comments
-    else:
-        units = [(n, line, line.lstrip().startswith("#")) for n, line in _plain_lines(text)]
 
+    A rule that has a structured twin in cmdrules.py (`fallback`) runs its pattern only on lines the
+    parser could not read, and on files that are not shell.
+    """
+    name = parsed.name
+    rules = [r for r in RULES if _applies(r.scope, name)]
     findings: list[Finding] = []
     seen: set[tuple[str, int]] = set()
 
@@ -463,38 +466,62 @@ def _scan_lines(name: str, text: str) -> list[Finding]:
             seen.add((rule.id, number))
             findings.append(Finding(rule.severity, f"{rule.message}: {shown[:120]}", name, number, rule.id))
 
-    for number, line, is_comment in units:
-        stripped = line.strip()
+    overlong: set[int] = set()
+    for unit in parsed.units:
+        stripped = unit.text.strip()
+        long_line = len(stripped) > MAX_PATTERN_LINE
         for rule in rules:
-            if (rule.comments or not is_comment) and rule.pattern.search(stripped):
-                hit(rule, number, stripped)
-    for number, comment in removed_comments:
+            if rule.fallback and parsed.understood(unit.number):
+                continue
+            if not (rule.comments or not unit.comment):
+                continue
+            if long_line and rule.risky:
+                overlong.add(unit.number)
+                # Where the parser read the line, the structured rules and the default-deny layer cover the
+                # whole of it. Where it could not, the pattern is all there is: read it in overlapping windows.
+                if not parsed.understood(unit.number) and any(rule.pattern.search(w) for w in _windows(stripped)):
+                    hit(rule, unit.number, stripped)
+                continue
+            if rule.pattern.search(stripped):
+                hit(rule, unit.number, stripped)
+    for number in sorted(overlong):
+        findings.append(Finding("caution", f"Line longer than {MAX_PATTERN_LINE} characters: the open-ended pattern rules "
+                                "were not run on it (the parsed-command rules and the default-deny check still were)",
+                                name, number, "overlong-line"))
+    for number, comment in parsed.removed_comments:
         stripped = comment.strip()
         for rule in rules:
             if rule.comments and rule.pattern.search(stripped):
                 hit(rule, number, stripped)
+    for finding in cmdrules.check(parsed):
+        if (finding.rule, finding.line) not in seen:
+            seen.add((finding.rule, finding.line))
+            findings.append(finding)
     danger_lines = {f.line for f in findings if f.severity == "danger"}
     return [f for f in findings if f.severity == "danger" or f.line not in danger_lines]
 
 
-def _scan_toplevel(name: str, text: str) -> list[Finding]:
+def _scan_toplevel(parsed: ParsedFile) -> list[Finding]:
     """Code outside any function runs when the file is merely sourced (e.g. by an AUR helper
     resolving dependencies), long before a build is approved."""
     findings: list[Finding] = []
-    for line in preprocess(text).lines:
+    for line in parsed.pre.lines:
         if line.region != "top" or line.kind not in ("command", "control"):
             continue
         shown = line.text[:120]
         if _TOP_DANGER.match(line.text):
-            findings.append(Finding("danger", f"Runs at parse time, outside any function: {shown}", name, line.number, "toplevel-exec"))
+            findings.append(Finding("danger", f"Runs at parse time, outside any function: {shown}", parsed.name, line.number, "toplevel-exec"))
         elif _TOP_CAUTION.match(line.text):
-            findings.append(Finding("caution", f"Runs at parse time, outside any function: {shown}", name, line.number, "toplevel-exec"))
+            findings.append(Finding("caution", f"Runs at parse time, outside any function: {shown}", parsed.name, line.number, "toplevel-exec"))
     return findings
 
 
-def _scan_anomalies(name: str, text: str) -> list[Finding]:
+def _scan_anomalies(parsed: ParsedFile) -> list[Finding]:
+    """Characters that make a file read differently from how it runs. These are about the bytes, so
+    this is one of the few checks that reads the raw text instead of the parse."""
+    name, text = parsed.name, parsed.raw_text()
     checks = [(_BIDI, "danger", "Bidirectional control character (Trojan Source: code shown differently than it runs)", "bidi-control")]
-    if not name.endswith((".patch", ".diff")):
+    if not parsed.is_patch:
         checks += [
             (_ZERO_WIDTH, "caution", "Invisible zero-width character in the file", "zero-width"),
             (_CONTROL, "caution", "Terminal control character in the file (can hide text from the reader)", "control-chars"),
@@ -511,73 +538,6 @@ def _scan_anomalies(name: str, text: str) -> list[Finding]:
     return findings
 
 
-ARRAY_LINE = re.compile(r"^[A-Za-z_]\w*(?:\[[^\]]*\])?(\+?)=\((.*)\)\s*$", re.S)
-ARRAY_NAME = re.compile(r"^([A-Za-z_]\w*)")
-
-
-def _array_items(body: str) -> list[str]:
-    try:
-        return shlex.split(body)
-    except ValueError:
-        return [t.strip("'\"") for t in re.findall(r"'[^']*'|\"[^\"]*\"|\S+", body)]
-
-
-def _variables(source) -> dict[str, str]:
-    """Literal assignments (`url="https://..."`), used to expand $url in source arrays."""
-    pre = source if isinstance(source, Preprocessed) else preprocess(source)
-    found: dict[str, str] = {}
-    for line in pre.lines:
-        if line.kind != "assignment" or "$(" in line.text or "`" in line.text:
-            continue
-        try:
-            words = shlex.split(line.text)
-        except ValueError:
-            continue
-        for word in words:
-            match = re.match(r"^(\w+)=(.*)$", word, re.S)
-            if match:
-                found.setdefault(match.group(1), match.group(2))
-    return found
-
-
-def _expand(value: str, variables: dict[str, str]) -> str:
-    for _ in range(5):
-        expanded = re.sub(
-            r"\$(?:\{(\w+)\}|(\w+))",
-            lambda m: variables.get(m.group(1) or m.group(2), m.group(0)),
-            value,
-        )
-        if expanded == value:
-            break
-        value = expanded
-    return value
-
-
-def _definitions(source):
-    """(name, appends, items, line) for every array assignment, in file order, nothing merged."""
-    pre = source if isinstance(source, Preprocessed) else preprocess(source)
-    for line in pre.lines:
-        if line.kind != "array":
-            continue
-        match, name = ARRAY_LINE.match(line.text), ARRAY_NAME.match(line.text)
-        if match and name:
-            yield name.group(1), bool(match.group(1)), _array_items(match.group(2)), line.number
-
-
-def _collect_arrays(source, overridden: list | None = None) -> dict[str, tuple[list[str], int]]:
-    """name -> (items, line) as makepkg would see it: `+=` appends, a later `=` replaces. The values that
-    were replaced are appended to `overridden` as (name, items, line), because a replaced source is
-    still something the author wrote and must not escape review."""
-    arrays: dict[str, tuple[list[str], int]] = {}
-    for key, appends, items, number in _definitions(source):
-        if appends and key in arrays:
-            items, number = arrays[key][0] + items, arrays[key][1]
-        elif key in arrays and overridden is not None:
-            overridden.append((key, *arrays[key]))
-        arrays[key] = (items, number)
-    return arrays
-
-
 class SourceEntry(NamedTuple):
     url: str        # after expanding simple variables
     line: int
@@ -586,19 +546,20 @@ class SourceEntry(NamedTuple):
     checksum: str   # "set", "SKIP" or "none"
 
 
-def source_entries(text: str) -> list[SourceEntry]:
-    """Every remote source of a PKGBUILD, with what is known about its integrity."""
-    replaced: list = []
-    arrays = _collect_arrays(text, replaced)
-    variables = _variables(text)
+def source_entries(source) -> list[SourceEntry]:
+    """Every remote source of a PKGBUILD, with what is known about its integrity. `source` is the
+    PKGBUILD text or its ParsedFile."""
+    parsed = parse("PKGBUILD", source)
+    arrays, replaced = parsed.replaced_arrays
+    variables = parsed.variables
     entries: list[SourceEntry] = []
-    for key, (items, _) in list(arrays.items()) + [(k, (i, n)) for k, i, n in replaced]:
+    for key, array in list(arrays.items()) + list(replaced):
         if not (key == "source" or key.startswith("source_")):
             continue
         suffix = key[len("source"):]
-        sums = [v[0] for k, v in arrays.items() if (m := SUMS_RE.match(k)) and (m.group(1) or "") == suffix]
-        for index, item in enumerate(items):
-            url = _expand(item, variables).split("::", 1)[-1]
+        sums = [v.items for k, v in arrays.items() if (m := SUMS_RE.match(k)) and (m.group(1) or "") == suffix]
+        for index, (item, line) in enumerate(zip(array.items, array.item_lines)):
+            url = expand(item, variables).split("::", 1)[-1]
             if "://" not in url or url.startswith("file://"):
                 continue
             vcs = url.startswith(VCS_PREFIXES)
@@ -607,42 +568,36 @@ def source_entries(text: str) -> list[SourceEntry]:
             else:
                 values = [arr[index] for arr in sums if index < len(arr)]
                 checksum = "SKIP" if values and all(v == "SKIP" for v in values) else ("set" if values else "none")
-            entries.append(SourceEntry(url, _line_of(text, item), vcs, (not vcs) or bool(re.search(r"#(?:commit|tag)=", url)), checksum))
+            entries.append(SourceEntry(url, line, vcs, (not vcs) or bool(re.search(r"#(?:commit|tag)=", url)), checksum))
     return entries
 
 
-def _line_of(text: str, needle: str) -> int:
-    index = text.find(needle)
-    return text.count("\n", 0, index) + 1 if index >= 0 else 0
-
-
-def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
+def _scan_pkgbuild(parsed: ParsedFile) -> list[Finding]:
+    name = parsed.name
     findings: list[Finding] = []
-    sources: dict[str, list[str]] = {}
+    sources: dict[str, list] = {}
     sums: list[tuple[str, list[str], int]] = []
-    replaced: list = []
-    arrays = _collect_arrays(text, replaced)
-    replaced_sources = [i for k, i, _ in replaced if k == "source" or k.startswith("source_")]
-    for key, (items, line) in arrays.items():
+    arrays, replaced = parsed.replaced_arrays
+    replaced_sources = [array for key, array in replaced if key == "source" or key.startswith("source_")]
+    for key, array in arrays.items():
         if key == "source" or key.startswith("source_"):
-            sources[key[len("source"):]] = items
+            sources[key[len("source"):]] = array
         elif SUMS_RE.match(key):
-            sums.append((SUMS_RE.match(key).group(1) or "", items, line))
+            sums.append((SUMS_RE.match(key).group(1) or "", array.items, array.line))
 
-    variables = _variables(text)
-    remote_non_vcs: list[str] = []
-    for items in list(sources.values()) + replaced_sources:
-        for item in items:
-            url = _expand(item, variables).split("::", 1)[-1]
+    variables = parsed.variables
+    remote_non_vcs: list[tuple[str, int]] = []
+    for array in list(sources.values()) + replaced_sources:
+        for item, line in zip(array.items, array.item_lines):
+            url = expand(item, variables).split("::", 1)[-1]
             if "://" not in url:
                 if "$" in url and ("/" in url or re.fullmatch(r"\$\{?[\w\[\]@*#!]+\}?", url)):
-                    findings.append(Finding("caution", f"Source could not be resolved, so it was not checked: {item}", name, _line_of(text, item), "unresolved-source"))
+                    findings.append(Finding("caution", f"Source could not be resolved, so it was not checked: {item}", name, line, "unresolved-source"))
                 continue
             is_vcs = url.startswith(VCS_PREFIXES)
             target = url.split("+", 1)[1] if is_vcs else url
             parts = urlsplit(target)
             host = (parts.hostname or "").lower()
-            line = _line_of(text, item)
             if target.startswith("file://"):
                 if parts.path.startswith(("/etc", "/root", "/home")):
                     findings.append(Finding("caution", f"Source reads a local file: {url}", name, line, "file-source"))
@@ -651,7 +606,7 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
             if is_vcs and not re.search(r"#(?:commit|tag)=", url):
                 findings.append(Finding("caution", f"VCS source is not pinned to a commit or tag, so what is built can differ from what was reviewed: {url}", name, line, "unpinned-vcs"))
             if not is_vcs:
-                remote_non_vcs.append(item)
+                remote_non_vcs.append((item, line))
                 if parts.path.lower().endswith(PREBUILT_EXT):
                     findings.append(Finding("caution", f"Source is a prebuilt binary or installer: {url}", name, line, "prebuilt-source"))
             if target.startswith(("http://", "ftp://", "git://")):
@@ -669,29 +624,29 @@ def _scan_pkgbuild(name: str, text: str) -> list[Finding]:
                 findings.append(Finding("caution", f"Host imitates GitHub: {host}", name, line, "github-lookalike"))
 
     if remote_non_vcs and not sums:
-        findings.append(Finding("caution", "Remote sources without any checksum array", name, _line_of(text, remote_non_vcs[0]), "no-checksums"))
+        findings.append(Finding("caution", "Remote sources without any checksum array", name, remote_non_vcs[0][1], "no-checksums"))
 
     for suffix, items, line in sums:
-        source_items = sources.get(suffix, [])
+        source_items = sources[suffix].items if suffix in sources else []
         for index, value in enumerate(items):
             if value != "SKIP" or index >= len(source_items):
                 continue
-            url = _expand(source_items[index], variables).split("::", 1)[-1]
+            url = expand(source_items[index], variables).split("::", 1)[-1]
             if "://" in url and not url.startswith(VCS_PREFIXES) and not url.startswith("file://"):
                 findings.append(Finding("caution", f"Checksum SKIP for non-VCS source: {url}", name, line, "checksum-skip"))
 
     if "replaces" in arrays:
-        items, line = arrays["replaces"]
-        core = sorted({re.split(r"[<>=]", i)[0] for i in items} & CORE_PACKAGES)
+        replaces = arrays["replaces"]
+        core = sorted({re.split(r"[<>=]", i)[0] for i in replaces.items} & CORE_PACKAGES)
         if core:
-            findings.append(Finding("caution", f"Replaces core system package(s): {', '.join(core)}", name, line, "replaces-core"))
+            findings.append(Finding("caution", f"Replaces core system package(s): {', '.join(core)}", name, replaces.line, "replaces-core"))
 
-    names = list(arrays["pkgname"][0]) if "pkgname" in arrays else []
+    names = list(arrays["pkgname"].items) if "pkgname" in arrays else []
     if "pkgname" in variables:
         names.append(variables["pkgname"])
     for pkgname in names:
         if re.search(r"-(?:fix|fixed|patch|patched|crack|cracked)(?:-bin|-git)?$", pkgname):
-            findings.append(Finding("caution", f"Name suggests an unofficial patched/cracked variant: {pkgname}", name, _line_of(text, "pkgname"), "impersonation-name"))
+            findings.append(Finding("caution", f"Name suggests an unofficial patched/cracked variant: {pkgname}", name, parsed.assignment_line("pkgname"), "impersonation-name"))
     return findings
 
 
@@ -725,14 +680,14 @@ _DEP_KEY = re.compile(r"^(?:depends|makedepends|checkdepends)(?:_\w+)?$")
 
 def dependencies(files: dict[str, str]) -> list[str]:
     """Package names the PKGBUILD pulls in at install/build time (optdepends are only suggestions)."""
-    text = files.get("PKGBUILD", "")
-    variables = _variables(text)
+    parsed = parse("PKGBUILD", files.get("PKGBUILD", ""))
+    variables = parsed.variables
     names: list[str] = []
-    for key, _, items, _ in _definitions(text):
-        if not _DEP_KEY.match(key):
+    for definition in parsed.definitions:
+        if not _DEP_KEY.match(definition.name):
             continue
-        for item in items:
-            dep = re.split(r"[<>=:]", _expand(item, variables))[0].strip()
+        for item in definition.items:
+            dep = re.split(r"[<>=:]", expand(item, variables))[0].strip()
             if dep and "$" not in dep and dep not in names:
                 names.append(dep)
     return names
@@ -773,23 +728,24 @@ def scan(files: dict[str, str], package: str | None = None) -> list[Finding]:
             continue
         found: list[Finding] = []
         try:
-            found += _scan_lines(name, text)
-            found += _scan_anomalies(name, text)
-            if TRUNCATED_MARKER in text:
+            parsed = ParsedFile(name, text)             # the only place the text is parsed
+            found += _scan_lines(parsed)
+            found += _scan_anomalies(parsed)
+            if TRUNCATED_MARKER in parsed.raw_text():
                 found.append(Finding("caution", "File is larger than the review limit; only its beginning was reviewed", name, None, "truncated-file"))
-            if name.rsplit("/", 1)[-1] == ".gitmodules":
+            if parsed.base == ".gitmodules":
                 found.append(Finding("caution", "Git submodules pull in external code that this review does not cover", name, None, "git-submodules"))
-            if name == "PKGBUILD":
-                found += _scan_pkgbuild(name, text)
-            if _is_shell(name):
-                pre = preprocess(text)
+            if parsed.is_pkgbuild:
+                found += _scan_pkgbuild(parsed)
+            if parsed.is_shell:
+                pre = parsed.pre
                 if not pre.ok:
                     found.append(Finding("caution", f"Shell that could not be parsed ({pre.error}); it was read as plain text", name, None, "unparseable-shell"))
                 found += [Finding("caution", note, name, None, "heredoc-unterminated") for note in pre.notes]
-                found += crosscheck.crosscheck(name, text, pre)
-                found += _scan_toplevel(name, text)
+                found += crosscheck.crosscheck(name, parsed.raw_text(), pre)
+                found += _scan_toplevel(parsed)
                 flagged_lines = {f.line for f in found if f.severity == "danger" or f.rule == "toplevel-exec"}
-                found += [f for f in scan_strict(name, text) if f.line not in flagged_lines]
+                found += [f for f in scan_strict(name, pre) if f.line not in flagged_lines]
             found += _file_gap(name)
         except Exception as exc:  # an analyzer bug or hostile input must never read as "nothing found"
             found.append(Finding("caution", f"The analyzer failed on this file ({type(exc).__name__}), so it was not fully reviewed", name, None, "analyzer-error"))

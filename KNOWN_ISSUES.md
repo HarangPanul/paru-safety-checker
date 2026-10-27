@@ -20,32 +20,26 @@ sources it opens (hostile archives, symlinks, decompression bombs).
 Things found while building the scanner that are **not fixed yet**. Each entry says what was
 actually measured and what is only a guess.
 
-## 1. Very long lines make the regex rules slow (quadratic time)
+## 1. Very long lines make the regex rules slow (quadratic time) — mitigated
 
-**Measured:** a single 60 KB line of `echo >a >a >a ...` (20,000 repeats) takes about **27 s**
-to scan. Other adversarial lines of the same size (long word, many pipes, many quotes, many
-`$(`, many backticks, many heredocs, unterminated quote, 3,000 nested parens) all finished in
-under 1 s. The check was interrupted before the other repeated-trigger cases were run.
+**Measured before:** a single 60 KB line of `echo >a >a >a ...` took about **27 s** to scan. The cost came
+from rules shaped like `A[^\n]*B`: for every `A` the engine retries `[^\n]*` to the end of the line.
 
-**Not a bypass**, only a slowdown: the file limit is 64 KB per file, so the cost is bounded,
-and a stalled scan blocks the install rather than letting it through.
+**Now:** the file rules that had this shape (`sudoers-passwd-write`, `pacman-config-write`,
+`install-system-files`, `live-system-write`, and the pipe rules) are decided on parsed commands in
+`cmdrules.py`, which is linear. Their patterns remain only as a fallback for lines the parser cannot read.
+Every pattern with an open-ended gap is marked `risky` and is **not run on a line longer than 2000
+characters**; that line gets an `overlong-line` caution instead. The 60 KB lines of `echo >a`, `curl x |`,
+`fsockopen`, `tar ~` and 60,000 spaces inside `curl x ... | sh` all scan in under a second
+(`test_long_lines_are_bounded`, `test_padding_does_not_hide_a_pipe_from_the_parsed_rule`).
 
-**Likely cause (not confirmed with a profiler):** rules shaped like `A[^\n]*B` where `A` can
-repeat many times and `B` never follows. The regex retries `[^\n]*` to the end of the line for
-every `A`. The rules built from `_WRITE + [^\n]* + path` in `heuristics.py`
-(`sudoers-passwd-write`, `pacman-config-write`, `install-system-files`) match this shape and
-`>` is part of `_WRITE`, which fits the measurement. Many other rules have the same shape
-(`pipe-to-shell`, `pipe-to-network`, `exfil-in-url`, `curl-upload`, `decode-exec`,
-`reverse-shell`, `home-archive`, ...), so they are suspects too, but none were measured.
-
-**Ideas for the fix:**
-- Two-step match for "write operation, then a path": find the first write operation, then
-  search for the path from that position (`pattern.search(line, pos)`). Linear, and unlike
-  capping `[^\n]*` at N characters it cannot be defeated by padding.
-- Alternatively scan over-long lines in overlapping windows and report the line itself as
-  `overlong-line` (caution). The default-deny layer in `strict.py` is linear and still sees
-  the whole line, so a payload hidden behind padding would still be reported there.
-- Add a test that scans a 60 KB line per trigger word with a time budget.
+**Still true:** on a line over 2000 characters, a finding that only a skipped open-gap pattern could make
+(for example `exfil-in-url`) is reduced to the `overlong-line` caution. The parsed-command rules and the
+default-deny layer still read the whole line. When the shell does not parse (`pre.ok == False`) the
+structured rules have nothing to read, so the patterns are the only rule layer left. On a line over 2000
+characters they are run in overlapping 1000-character windows instead of being skipped. A match whose parts
+are more than about 500 characters apart can fall between windows, so a file that is both unparseable and
+padded that wide reaches the user as the `unparseable-shell` and `overlong-line` cautions, not as a danger.
 
 ## 3. The reviewed PKGBUILD and the built PKGBUILD can differ (TOCTOU)
 

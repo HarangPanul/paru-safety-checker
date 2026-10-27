@@ -1,0 +1,390 @@
+"""Rules that read parsed commands, not text.
+
+A regex over a command line has to guess where words, quotes and pipes are. These rules get the
+words already split with quotes removed, the pipeline each command sits in, and the files it
+writes, so `c''url x | "ba"sh`, `sudo -u nobody env bash -s` and `cp x /etc//pam.d/../pam.d/login`
+are the ordinary cases they were written for. Their regex twins in heuristics.py (`fallback=True`)
+run only on lines this parser could not read.
+
+Each rule is a function of one command (and the commands that feed it); it answers yes or no.
+Severity, message and scope live next to it, the same as for the regex rules.
+"""
+from __future__ import annotations
+
+import posixpath
+import re
+from dataclasses import dataclass
+from typing import Callable, NamedTuple
+
+from .fileaccess import file_accesses
+from .invocation import (FETCHERS, NETWORK_CLIENTS, PRIVILEGE, SHELLS, base, flags, interpreter, operands,
+                         reads_program_from_stdin, views)
+from .models import Finding
+from .parsed import ParsedCommand, ParsedFile
+from .strict import Command
+
+SYSTEM_ROOTS = ("usr", "etc", "opt", "bin", "sbin", "lib", "lib64", "boot", "var", "root", "home", "srv")
+TOP_LEVEL_DIRS = frozenset("/" + d for d in ("etc", "usr", "bin", "sbin", "lib", "lib64", "boot", "var", "home", "root",
+                                             "opt", "srv", "dev", "sys", "proc"))
+TEMP_DIRS = ("/tmp", "/dev/shm", "/var/tmp")
+SETUID_TARGETS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python2", "python3", "perl", "find",
+                            "cp", "env", "vim", "vi", "nmap", "awk", "ruby", "node", "php"})
+SENSITIVE_HOOK_PATHS = re.compile(
+    r"^/(?:etc/(?:pam\.d|ssh|ld\.so\.conf|profile|bash\.bashrc|environment|rc\.local|init\.d|crontab|cron\.\w+|hosts"
+    r"|resolv\.conf|nsswitch\.conf|fstab|modules-load\.d|modprobe\.d|udev|security|pacman\.d)|boot|usr/lib/security|lib/security)(?:/|$)"
+)
+HOME_PERSISTENCE = re.compile(
+    r"^(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)/(?:\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|xprofile"
+    r"|xinitrc|xsession)|\.config/(?:autostart|systemd/user|fish/config\.fish)(?:/|$)|\.local/share/systemd/user(?:/|$)"
+    r"|\.ssh/authorized_keys2?)$|^(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)/\.(?:config/(?:autostart|systemd/user)|local/share/systemd/user)/"
+)
+ACCOUNT_FILES = re.compile(r"^/etc/(?:sudoers(?:\.d)?|passwd|shadow|gshadow|group)(?:/|$)")
+PACMAN_FILES = re.compile(r"^/etc/(?:pacman\.conf|makepkg\.conf|pacman\.d/gnupg)(?:/|$)")
+
+
+class Ctx(NamedTuple):
+    pc: ParsedCommand
+    view: Command            # the program that runs: the command itself, or what a wrapper starts
+    name: str                # its base name
+    outer: bool              # this is the command as written, not something a wrapper starts
+    hook: bool               # the file is an install scriptlet (runs as root on the live system)
+    parsed: ParsedFile
+
+
+@dataclass(frozen=True)
+class CmdRule:
+    id: str
+    severity: str
+    message: str
+    check: Callable[[Ctx], bool]
+    scope: str = "code"      # same meaning as Rule.scope in heuristics.py
+    outer_only: bool = False
+
+
+# ---- paths ----
+
+def resolve(path: str, hook: bool) -> str:
+    """The path with `//`, `.` and `..` folded away. In an install scriptlet a relative path is
+    relative to `/`, because pacman runs the scriptlet from there. Anything built from a variable or
+    `~` is returned unchanged."""
+    if not path or "$" in path or "`" in path or path.startswith("~"):
+        return path
+    if not path.startswith("/"):
+        if not hook or path == "-":
+            return path
+        path = "/" + path
+    return posixpath.normpath(re.sub(r"/{2,}", "/", path))
+
+
+def under(path: str, prefixes) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in prefixes)
+
+
+def live_path(path: str) -> bool:
+    if not path.startswith("/") or under(path, ("/var/tmp",)):
+        return False
+    first = path.split("/", 2)[1]
+    return first in SYSTEM_ROOTS
+
+
+def written(ctx: Ctx) -> list[str]:
+    """Resolved paths this command writes or deletes."""
+    return [resolve(path, ctx.hook) for verb, path in file_accesses(ctx.view, ctx.hook) if verb in ("write", "delete")]
+
+
+def in_temp(path: str, hook: bool = False) -> bool:
+    return under(resolve(path, hook), TEMP_DIRS)
+
+
+# ---- pipelines: something downloaded or decoded, then run ----
+
+def _upstream(ctx: Ctx) -> list[Command]:
+    return [v for c in ctx.pc.upstream() for v in views(c)]
+
+
+def _receives_program(ctx: Ctx) -> bool:
+    return ctx.view.piped and reads_program_from_stdin(ctx.name, ctx.view.args)
+
+
+def pipe_to_shell(ctx: Ctx) -> bool:
+    return _receives_program(ctx) and any(base(c.name) in FETCHERS for c in _upstream(ctx))
+
+
+def network_pipe_shell(ctx: Ctx) -> bool:
+    if not _receives_program(ctx):
+        return False
+    for c in _upstream(ctx):
+        name = base(c.name)
+        if name in NETWORK_CLIENTS or (name == "openssl" and "s_client" in c.args):
+            return True
+    return False
+
+
+def _decodes(command: Command) -> str:
+    """'base64' or 'other' when the command decodes or decompresses its input, else ''."""
+    name, args = base(command.name), command.args
+    letters = flags(args)
+    if name == "base64":
+        return "base64" if letters & {"d", "D", "--decode"} else ""
+    if name in ("base32",):
+        return "other" if letters & {"d", "--decode"} else ""
+    if name == "xxd":
+        return "other" if "r" in letters else ""
+    if name == "openssl":
+        return "other" if "-d" in args or "-decrypt" in args else ""
+    if name == "tr":
+        return "other" if any(re.search(r"n-za-m", a, re.I) for a in args) else ""
+    if name in ("gzip", "bzip2", "xz", "zstd", "lzma"):
+        return "other" if letters & {"d", "--decompress", "--uncompress"} else ""
+    if name in ("uudecode", "gunzip", "zcat", "bzcat", "xzcat", "unxz", "unzstd", "zstdcat", "lzcat", "unlzma",
+                "brotli", "rev"):
+        return "other"
+    return ""
+
+
+def base64_exec(ctx: Ctx) -> bool:
+    return _receives_program(ctx) and any(_decodes(c) == "base64" for c in _upstream(ctx))
+
+
+def decode_exec(ctx: Ctx) -> bool:
+    return _receives_program(ctx) and any(_decodes(c) == "other" for c in _upstream(ctx))
+
+
+# ---- privilege ----
+
+def uses_privilege(ctx: Ctx) -> bool:
+    return ctx.name in PRIVILEGE
+
+
+def _mode_sets_id_bit(mode: str) -> bool:
+    """True for a mode that sets setuid or setgid: 4755, 2755, u+s, g+s, +s, a+s, u=rwxs."""
+    if re.fullmatch(r"[0-7]{4,5}", mode):
+        return bool(int(mode[-4], 8) & 6)
+    for clause in mode.split(","):
+        match = re.fullmatch(r"([ugoa]*)([-+=])([rwxXst]*)", clause)
+        if match and match.group(2) in "+=" and "s" in match.group(3) and (
+                not match.group(1) or set(match.group(1)) & set("uga")):
+            return True
+    return False
+
+
+def _chmod_mode_and_targets(ctx: Ctx):
+    if ctx.name != "chmod":
+        return None, []
+    ops = [a for a in ctx.view.args if a != "--" and not a.startswith("-")]
+    return (ops[0], ops[1:]) if ops else (None, [])
+
+
+def setuid_bit(ctx: Ctx) -> bool:
+    mode, _ = _chmod_mode_and_targets(ctx)
+    return mode is not None and _mode_sets_id_bit(mode)
+
+
+def setuid_shell(ctx: Ctx) -> bool:
+    mode, targets = _chmod_mode_and_targets(ctx)
+    if mode is None or not _mode_sets_id_bit(mode):
+        return False
+    return any(base(t) in SETUID_TARGETS or in_temp(t, ctx.hook) for t in targets)
+
+
+# ---- the system's files ----
+
+def live_system_write(ctx: Ctx) -> bool:
+    return any(live_path(p) for p in written(ctx))
+
+
+def account_write(ctx: Ctx) -> bool:
+    return any(ACCOUNT_FILES.match(p) for p in written(ctx))
+
+
+def pacman_config_write(ctx: Ctx) -> bool:
+    return any(PACMAN_FILES.match(p) for p in written(ctx))
+
+
+def hook_system_files(ctx: Ctx) -> bool:
+    return any(SENSITIVE_HOOK_PATHS.match(p) for p in written(ctx))
+
+
+def home_persistence_write(ctx: Ctx) -> bool:
+    """Writes a file the user's session loads on its own: shell rc, autostart, user units, authorized_keys.
+    A build runs as the user, so this is the package reaching out of the build tree to run later."""
+    return any(HOME_PERSISTENCE.match(path) for path in written(ctx))
+
+
+# ---- destruction ----
+
+def _root_like(target: str) -> bool:
+    path = re.sub(r"/{2,}", "/", target)
+    if path.endswith("/*"):
+        path = path[:-2] or "/"
+    path = path.rstrip("/") or "/"
+    if path.startswith("/"):
+        path = posixpath.normpath(path)
+    return path in ("/", "~", "$HOME", "${HOME}")
+
+
+def rm_root(ctx: Ctx) -> bool:
+    if ctx.name != "rm":
+        return False
+    return "--no-preserve-root" in ctx.view.args or any(_root_like(t) for t in operands(ctx.view.args))
+
+
+def rm_system_dir(ctx: Ctx) -> bool:
+    if ctx.name != "rm" or not (flags(ctx.view.args) & {"r", "R", "--recursive"}):
+        return False
+    for target in operands(ctx.view.args):
+        path = re.sub(r"/{2,}", "/", target)
+        if path.endswith("/*"):
+            path = path[:-2]
+        if path.startswith("/") and posixpath.normpath(path.rstrip("/") or "/") in TOP_LEVEL_DIRS:
+            return True
+    return False
+
+
+# ---- execution from world-writable places ----
+
+def exec_from_temp(ctx: Ctx) -> bool:
+    name, args = ctx.name, ctx.view.args
+    if ctx.view.name.startswith("/") and in_temp(ctx.view.name, ctx.hook):
+        return True
+    if name == "chmod":
+        return any(in_temp(a, ctx.hook) for a in operands(args))
+    if name in ("source", ".") or name in SHELLS or interpreter(name):
+        for arg in args:
+            if arg.startswith("-"):
+                continue
+            return in_temp(arg, ctx.hook)
+    return False
+
+
+# ---- named tools: the program, not a string that mentions it ----
+
+def _named(*names: str) -> Callable[[Ctx], bool]:
+    wanted = frozenset(names)
+    return lambda ctx: ctx.name in wanted
+
+
+def immutable_attr(ctx: Ctx) -> bool:
+    return ctx.name == "chattr" and any(re.fullmatch(r"[+=][a-zA-Z]*i[a-zA-Z]*", a) for a in ctx.view.args)
+
+
+CMD_RULES: tuple[CmdRule, ...] = (
+    CmdRule("pipe-to-shell", "danger", "Downloads remote code and executes it directly", pipe_to_shell, "all"),
+    CmdRule("base64-exec", "danger", "Decodes an obfuscated payload and executes it", base64_exec, "all"),
+    CmdRule("decode-exec", "danger", "Decodes or decompresses a hidden payload and executes it", decode_exec, "all"),
+    CmdRule("network-pipe-shell", "danger", "Pipes data from a raw network connection into a shell", network_pipe_shell, "all"),
+    CmdRule("sudoers-passwd-write", "danger", "Writes to sudoers or the account databases", account_write),
+    CmdRule("pacman-config-write", "danger", "Modifies pacman/makepkg configuration or its keyring directly", pacman_config_write),
+    CmdRule("setuid-shell", "danger", "Sets the setuid bit on a shell/interpreter (privilege-escalation backdoor)", setuid_shell),
+    CmdRule("rm-root", "danger", "Deletes the root or home directory", rm_root, "all"),
+    CmdRule("rm-system-dir", "danger", "Deletes a top-level system directory", rm_system_dir),
+    CmdRule("home-persistence-write", "danger",
+            "Writes to a shell rc, autostart entry, user unit or authorized_keys from the build", home_persistence_write, "build"),
+    CmdRule("sudo", "caution", "Calls sudo/su; packaging scripts should not", uses_privilege, outer_only=True),
+    CmdRule("setuid", "caution", "Sets the setuid/setgid bit", setuid_bit),
+    CmdRule("exec-from-tmp", "caution", "Makes executable or runs files from a world-writable directory", exec_from_temp),
+    CmdRule("kernel-module", "caution", "Loads or unloads kernel modules", _named("insmod", "rmmod", "modprobe")),
+    CmdRule("setcap", "caution", "Grants file capabilities", _named("setcap")),
+    CmdRule("pacman-key", "caution", "Changes the pacman trust keyring", _named("pacman-key")),
+    CmdRule("chattr-immutable", "caution", "Makes files immutable (hard to remove)", immutable_attr),
+    CmdRule("user-management", "caution", "Creates or modifies system users",
+            _named("useradd", "usermod", "adduser", "chpasswd", "gpasswd")),
+    CmdRule("background-exec", "caution", "Starts processes that outlive the build or install",
+            _named("nohup", "setsid", "disown"), outer_only=True),
+    CmdRule("live-system-write", "caution", "Writes to the live system instead of $pkgdir", live_system_write, "build"),
+    CmdRule("install-system-files", "caution", "Install hook edits sensitive system files", hook_system_files, "install"),
+)
+
+IDS = frozenset(r.id for r in CMD_RULES)
+DATAFLOW_IDS = frozenset({"fetch-then-execute"})
+# no pattern twin: these look at what a command does to a path, which a line of text cannot say
+STRUCTURED_ONLY = frozenset({"home-persistence-write", "fetch-then-execute"})
+
+
+def _applies(scope: str, parsed: ParsedFile) -> bool:
+    return (
+        scope == "all"
+        or (scope == "code" and not parsed.is_patch)
+        or (scope == "build" and not parsed.is_patch and not parsed.is_install)
+        or (scope == "install" and parsed.is_install)
+    )
+
+
+# ---- dataflow: a file fetched earlier and run later ----
+
+_OUTPUT_FLAGS = {"curl": ("-o", "--output"), "wget": ("-O", "--output-document"), "wget2": ("-O", "--output-document"),
+                 "aria2c": ("-o", "--out"), "axel": ("-o", "--output")}
+_URL = re.compile(r"^[a-z][a-z0-9+.-]*://", re.I)
+
+
+def _fetched_files(command: Command) -> list[str]:
+    """Where a download command puts the file: -o/-O/--output, a redirect, or the URL's own name."""
+    name = base(command.name)
+    if name not in FETCHERS:
+        return []
+    args, found = list(command.args), []
+    short, long = _OUTPUT_FLAGS.get(name, ("-o", "--output"))
+    for index, arg in enumerate(args):
+        if (arg == short or (arg.startswith("-") and not arg.startswith("--") and len(arg) > 2 and arg[-1] == short[1])) \
+                and index + 1 < len(args):
+            found.append(args[index + 1])           # -o f, or a cluster ending in the flag: -qO f, -sLo f
+        elif arg.startswith(long + "="):
+            found.append(arg.split("=", 1)[1])
+        elif len(arg) > 2 and arg.startswith(short) and not arg.startswith("--") and arg[1] == short[1]:
+            found.append(arg[2:])
+    found += [target for op, target in command.redirects if op in (">", ">>", ">|")]
+    if not found and (("O" in flags(args) and name == "curl") or name in ("wget", "wget2")):
+        found += [posixpath.basename(a.split("?", 1)[0].rstrip("/")) for a in args if _URL.match(a)]
+    return [f for f in found if f and f != "-" and "$" not in f.split("/")[-1]]
+
+
+def _runs(command: Command, files: dict[str, int]) -> str | None:
+    """The fetched file this command executes, if it does."""
+    name = base(command.name)
+    candidates: list[str] = []
+    if command.name.startswith(("./", "/")) or command.name in files:
+        candidates.append(command.name)
+    if name in ("source", ".") or name in SHELLS or interpreter(name):
+        candidates += [a for a in operands(command.args)[:1]] if not (flags(command.args) & {"c", "e", "m"}) else []
+    for path in candidates:
+        key = posixpath.normpath(path)
+        if key in files:
+            return key
+    return None
+
+
+def fetch_then_execute(parsed: ParsedFile) -> list[Finding]:
+    """`curl -o f URL; sh f`, `wget URL; ./name`, `curl URL > f; chmod +x f; ./f`: the same trust as
+    `curl | sh`, with a step in between that a pipe-only rule never sees."""
+    findings: list[Finding] = []
+    fetched: dict[str, int] = {}
+    reported: set[int] = set()
+    for pc in parsed.commands:
+        for view in views(pc.command):
+            hit = _runs(view, fetched)
+            if hit and pc.line not in reported:
+                reported.add(pc.line)
+                findings.append(Finding("danger", f"Downloads a file and then executes it ({hit}, fetched on line "
+                                        f"{fetched[hit]}): {pc.text.strip()[:120]}", parsed.name, pc.line, "fetch-then-execute"))
+            for path in _fetched_files(view):
+                fetched.setdefault(posixpath.normpath(path), pc.line)
+    return findings
+
+
+def check(parsed: ParsedFile) -> list[Finding]:
+    """Findings from the structured rules, one per (rule, line)."""
+    findings: list[Finding] = []
+    seen: set[tuple[str, int]] = set()
+    rules = [r for r in CMD_RULES if _applies(r.scope, parsed)]
+    for pc in parsed.commands:
+        for depth, view in enumerate(views(pc.command)):
+            ctx = Ctx(pc, view, base(view.name), depth == 0, parsed.is_install, parsed)
+            for rule in rules:
+                if (rule.id, pc.line) in seen or (rule.outer_only and depth):
+                    continue
+                if rule.check(ctx):
+                    seen.add((rule.id, pc.line))
+                    findings.append(Finding(rule.severity, f"{rule.message}: {pc.text.strip()[:120]}",
+                                            parsed.name, pc.line, rule.id))
+    findings += fetch_then_execute(parsed)
+    return findings

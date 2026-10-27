@@ -69,6 +69,7 @@ class Command(NamedTuple):
     args: list[str]
     piped: bool
     redirects: tuple = ()  # ((operator, target), ...) for > >> < etc.; heredoc bodies are not files
+    segment: int = 0       # commands of one pipeline stage share a number; a piped stage reads stage - 1
 
 
 def _match_paren(s: str, i: int) -> int:
@@ -204,11 +205,12 @@ def _segment(words: list[str], piped: bool) -> list[Command]:
 MAX_NESTING = 30
 
 
-def extract_commands(text: str, _depth: int = 0) -> tuple[list[Command], bool]:
+def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = None) -> tuple[list[Command], bool]:
     """Every simple command in `text`, including those inside substitutions. ok=False if unparseable
     (including nesting deeper than MAX_NESTING, which only an attacker writes)."""
     if _depth > MAX_NESTING:
         return [], False
+    stages = _stages if _stages is not None else [0]
     text = text.replace(r"\;", " __SEMI__ ")
     outer, subs = strip_substitutions(text)
     outer = re.sub(r"\(\([^()]*\)\)", " ", outer)
@@ -270,9 +272,10 @@ def extract_commands(text: str, _depth: int = 0) -> tuple[list[Command], bool]:
                 found[0] = found[0]._replace(redirects=tuple(segment_redirects))
             else:
                 found = [Command(":", [], piped, tuple(segment_redirects))]
-        commands.extend(found)
+        commands.extend(c._replace(segment=stages[0]) for c in found)
+        stages[0] += 1
     for inner in subs:
-        inner_commands, inner_ok = extract_commands(inner, _depth + 1)
+        inner_commands, inner_ok = extract_commands(inner, _depth + 1, stages)
         commands.extend(inner_commands)
         ok = ok and inner_ok
     return commands, ok
@@ -396,9 +399,10 @@ def normalise(name: str) -> str:
     return _normalise(name)
 
 
-def scan_strict(name: str, text: str) -> list[Finding]:
+def scan_strict(name: str, source) -> list[Finding]:
+    """`source` is the script text, or its Preprocessed form."""
     allowed = HOOK_ALLOWED if name.endswith(".install") else BUILD_ALLOWED
-    pre = preprocess(text)
+    pre = source if isinstance(source, Preprocessed) else preprocess(source)
     local_functions = {m.group(1) for l in pre.lines if l.kind == "function" and (m := re.match(r"^([^\s()]+)", l.text))}
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
