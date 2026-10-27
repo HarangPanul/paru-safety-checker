@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Scan AUR PKGBUILDs with AI before installing them with paru"
 readme = "README.md"
 license = { file = "LICENSE" }
+authors = [{ name = "HarangPanul" }]
 requires-python = ">=3.10"
 dependencies = []
 
@@ -18,6 +19,7 @@ dev = ["pytest"]
 paru-safe = "paru_safety_checker.cli:main"
 
 [tool.setuptools]
+license-files = ["LICENSE", "NOTICE"]
 packages = ["paru_safety_checker", "paru_safety_checker.providers"]
 
 [tool.pytest.ini_options]

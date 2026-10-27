@@ -97,3 +97,7 @@ python -m paru_safety_checker.corpus measure --corpus data/corpus --examples 3
 ```
 
 AUR이 429/403을 돌려주면 지수 백오프로 재시도하고, 계속되면 중단합니다. `data/`는 git에서 제외됩니다.
+
+## 라이선스
+
+[Apache-2.0](LICENSE) © 2026 HarangPanul. 저작권 고지는 [NOTICE](NOTICE)에 있습니다.
