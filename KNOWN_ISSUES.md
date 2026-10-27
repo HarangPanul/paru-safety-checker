@@ -1,5 +1,22 @@
 # Known issues / to fix later
 
+## Not developed yet (deliberately deferred)
+
+### Judging what the downloaded sources do
+
+**Decision:** this is left to the user. `paru-safe` reports *what is downloaded* (URL, checksum,
+whether a VCS source is pinned) and warns about it, and the user decides whether to trust it.
+The contents of remote sources are never fetched or inspected: a `./configure`, `Makefile`,
+`setup.py` or `postinstall` script inside a tarball can do anything, and the PKGBUILD review says
+nothing about it.
+
+**Later, if it can be done safely:** a separate verification tool that fetches and checks sources
+without running them (verify the checksum, extract without executing anything, then review the
+build scripts), or that builds inside a sandbox so that what the sources do is contained instead of
+detected. It should only be built once there is a way to do it that cannot itself be attacked by the
+sources it opens (hostile archives, symlinks, decompression bombs).
+
+
 Things found while building the scanner that are **not fixed yet**. Each entry says what was
 actually measured and what is only a guess.
 
@@ -29,16 +46,6 @@ every `A`. The rules built from `_WRITE + [^\n]* + path` in `heuristics.py`
   `overlong-line` (caution). The default-deny layer in `strict.py` is linear and still sees
   the whole line, so a payload hidden behind padding would still be reported there.
 - Add a test that scans a 60 KB line per trigger word with a time budget.
-
-## 2. The contents of remote sources are never reviewed
-
-`source=(...)` URLs, VCS clones, and anything a build tool downloads (`npm`, `cargo`, `pip`,
-`go`, ...) are only **warned about**, never fetched or inspected. A `./configure`, `Makefile`,
-`setup.py` or `postinstall` script inside a tarball can do anything, and the allowlist in
-`strict.py` only judges the PKGBUILD's own commands. This is the largest remaining gap.
-
-Options: download and verify sources, then scan their build scripts; or build inside a sandbox
-so that what the sources do is contained instead of detected.
 
 ## 3. The reviewed PKGBUILD and the built PKGBUILD can differ (TOCTOU)
 
