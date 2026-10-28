@@ -23,7 +23,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -220,11 +220,35 @@ def collect(
     return stats
 
 
+# What to count inside the noisiest rules: which command is unknown, which file kind is unanalysed...
+# The key is cut out of the finding's message so that the report says where the noise comes from.
+DETAIL_KEYS = {
+    "unknown-command": re.compile(r"\(default-deny\): ([^:]+):"),
+    "dynamic-command": re.compile(r"\(([^)]*)\), so what runs"),
+    "unanalyzed-file": re.compile(r"not understood: (\S+)"),
+    "toplevel-code": re.compile(r"parsed: (\S+)"),
+    "dependency-fetch": re.compile(r"reviewed files\): (\S+(?: \S+)?)"),
+    "parse-time-command": re.compile(r"parse time \(([^)]*)\)"),
+}
+
+
+def _detail_key(rule: str, finding) -> str | None:
+    match = DETAIL_KEYS[rule].search(finding.message)
+    if not match:
+        return None
+    key = match.group(1)
+    if rule == "unanalyzed-file":
+        base = key.rsplit("/", 1)[-1]
+        return "." + base.rsplit(".", 1)[-1] if "." in base.lstrip(".") else base
+    return key
+
+
 def measure(path: Path, examples: int = 3) -> dict:
     """Run the scanner over the corpus; every finding is presumed to be a false positive."""
     levels = {"safe": 0, "caution": 0, "danger": 0}
     flagged: dict[str, list[str]] = {"caution": [], "danger": []}
     rules: dict[str, dict] = defaultdict(lambda: {"severity": "", "findings": 0, "packages": set(), "examples": []})
+    details: dict[str, Counter] = {rule: Counter() for rule in DETAIL_KEYS}
     total = 0
     for record in iter_records(path):
         if "files" not in record:
@@ -236,6 +260,8 @@ def measure(path: Path, examples: int = 3) -> dict:
         if level != "safe":
             flagged[level].append(record["name"])
         for finding in findings:
+            if finding.rule in details and (key := _detail_key(finding.rule, finding)):
+                details[finding.rule][key] += 1
             entry = rules[finding.rule]
             entry["severity"] = finding.severity
             entry["findings"] += 1
@@ -245,6 +271,7 @@ def measure(path: Path, examples: int = 3) -> dict:
     return {
         "total": total, "levels": levels, "flagged": flagged,
         "rules": {k: {**v, "packages": sorted(v["packages"])} for k, v in rules.items()},
+        "details": {rule: dict(counter.most_common(40)) for rule, counter in details.items() if counter},
     }
 
 
@@ -260,6 +287,10 @@ def format_report(report: dict) -> str:
     for rule, entry in ordered:
         lines.append(f"  [{entry['severity']}] {rule}: {len(entry['packages'])} packages, {entry['findings']} findings")
         lines.extend(f"      {example}" for example in entry["examples"])
+    for rule, counts in report.get("details", {}).items():
+        lines.append("")
+        lines.append(f"what the {rule} findings are about (top 10 of {len(counts)} shown in the JSON):")
+        lines.extend(f"  {count:5}  {key}" for key, count in list(counts.items())[:10])
     if report["flagged"]["danger"]:
         lines.append("")
         lines.append("danger packages (review first): " + ", ".join(report["flagged"]["danger"]))

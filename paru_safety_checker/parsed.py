@@ -33,6 +33,7 @@ class Unit(NamedTuple):
     number: int
     text: str
     comment: bool
+    heredoc: bool = False           # the body of a here-document: text written somewhere, not a command
 
 
 class Group:
@@ -282,9 +283,10 @@ class ParsedFile:
         (comments removed, continuations joined) for patterns that span `;`. Files that are not shell
         are read line by line with continuations joined."""
         if self.pre is not None:
-            units = [Unit(l.number, l.text, l.kind == "heredoc" and l.text.lstrip().startswith("#"))
+            units = [Unit(l.number, l.text, l.kind == "heredoc" and l.text.lstrip().startswith("#"), l.kind == "heredoc")
                      for l in self.pre.lines if l.kind not in ("heredoc-end", "case-pattern")]
-            units += [Unit(n, t, t.lstrip().startswith("#")) for n, t in self.pre.statements]
+            bodies = {l.number for l in self.pre.lines if l.kind in ("heredoc", "heredoc-end")}
+            units += [Unit(n, t, t.lstrip().startswith("#"), n in bodies) for n, t in self.pre.statements]
             return tuple(units)
         out, buf, start = [], "", 0
         for number, line in enumerate(self._text.split("\n"), 1):

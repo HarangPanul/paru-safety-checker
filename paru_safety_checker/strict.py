@@ -206,6 +206,25 @@ def _segment(words: list[str], piped: bool) -> list[Command]:
 MAX_NESTING = 30
 
 
+_OPERATORS = sorted(SEGMENT_OPS | REDIRECTS, key=len, reverse=True)
+_PUNCTUATION = frozenset("();<>|&")
+
+
+def _split_operators(tokens: list[str]) -> list[str]:
+    """shlex joins neighbouring punctuation (`);`, `)|`, `;;)`) into one token; cut it into the shell operators."""
+    out: list[str] = []
+    for token in tokens:
+        if len(token) < 2 or token in SEGMENT_OPS or token in REDIRECTS or not set(token) <= _PUNCTUATION:
+            out.append(token)
+            continue
+        rest = token
+        while rest:
+            op = next((o for o in _OPERATORS if rest.startswith(o)), rest[0])
+            out.append(op)
+            rest = rest[len(op):]
+    return out
+
+
 def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = None) -> tuple[list[Command], bool]:
     """Every simple command in `text`, including those inside substitutions. ok=False if unparseable
     (including nesting deeper than MAX_NESTING, which only an attacker writes)."""
@@ -223,6 +242,7 @@ def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = Non
     except ValueError:
         return [], False
 
+    tokens = _split_operators(tokens)
     commands: list[Command] = []
     segments: list[tuple[list[str], bool, list[tuple[str, str]]]] = []
     current: list[str] = []
@@ -231,7 +251,14 @@ def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = Non
     open_parens = 0
     groups: list[bool] = []         # one entry per open `(` / `{`: did a pipe feed it? Everything inside reads that pipe
     pending_op: str | None = None
+    array_depth = 0                 # inside the (...) of `name=(...)`: those words are values, not commands
     for token in tokens:
+        if array_depth:
+            array_depth += (token == "(") - (token == ")")
+            continue
+        if token == "(" and current and re.fullmatch(r"[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=", current[-1]):
+            array_depth = 1
+            continue
         if token in SEGMENT_OPS:
             if token == ")" and open_parens == 0:
                 # a case pattern like `x86_64)` or `a|b)`: not a command

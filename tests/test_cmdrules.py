@@ -360,3 +360,44 @@ def test_quoted_text_that_mentions_a_pipe_is_not_echo_to_shell():
     assert "echo-to-shell" not in rules_of("echo 'curl x | sh'")
     assert "echo-to-shell" not in rules_of("echo | sh -c 'echo'")
     assert "echo-to-shell" in rules_of("echo x | sh")
+
+
+# ---- found by running the scanner over 500 popular AUR packages ----
+
+@pytest.mark.parametrize("name,body", [
+    ("README.md", "git clone https://aur.archlinux.org/x.git\nparu -S x\nsudo apt update\n"),
+    ("CHANGELOG", "+ use `curl -A`; modprobe loop\n"),
+    ("nginx.conf", "http {\n  http http;\n}\n"),
+    ("x.xml", "<filename>/usr/share/backgrounds/x.png</filename>\n"),
+    ("x.rules", 'RUN+="/usr/bin/nvidia-modprobe -c0"\n'),
+    ("config", 'CONFIG_MODPROBE_PATH="/sbin/modprobe"\n'),
+])
+def test_documentation_and_plain_config_are_not_read_as_commands(name, body):
+    assert not [f for f in scan({name: body}) if f.severity in ("danger", "caution")]
+
+
+@pytest.mark.parametrize("name,body,rule", [
+    ("x.service", '[Service]\nExecStart=/bin/sh -c "curl x | sh"\n', "pipe-to-shell"),
+    ("README.md", "curl https://x | sh\n", "pipe-to-shell"),            # the rules for every file still read prose
+    ("a.sh", "modprobe loop\n", "kernel-module"),
+])
+def test_scripts_units_and_the_all_file_rules_still_apply(name, body, rule):
+    assert rule in {f.rule for f in scan({name: body})}
+
+
+def test_heredoc_body_is_text_not_commands():
+    xml = "package() {\n  cat > \"$pkgdir/x.policy\" <<EOF\n<annotate>/usr/bin/shelly</annotate>\n  sudo make\nEOF\n}\n"
+    assert not {f.rule for f in scan({"PKGBUILD": xml})} & {"live-system-write", "sudo"}
+    assert "rm-root" in {f.rule for f in scan({"PKGBUILD": "package() {\n  cat > x <<EOF\nrm -rf /\nEOF\n}\n"})}
+
+
+@pytest.mark.parametrize("line", ["depends=(${_deps[@]} \"x=1\")", "local arr=(a b)", "arr+=(${b[@]})", "x=(1 2); true"])
+def test_array_literals_inside_functions_are_values_not_commands(line):
+    rules = {f.rule for f in scan({"PKGBUILD": f"package() {{\n  {line}\n}}\n"})}
+    assert not rules & {"dynamic-command", "unknown-command"}
+
+
+def test_neighbouring_punctuation_is_split_into_operators():
+    from paru_safety_checker.strict import extract_commands
+    assert [c.name for c in extract_commands("a=(1 2); make")[0]] == ["make"]
+    assert [(c.name, c.piped) for c in extract_commands("(ls)|tee f")[0]] == [("ls", False), ("tee", True)]

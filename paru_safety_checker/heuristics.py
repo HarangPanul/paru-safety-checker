@@ -430,13 +430,29 @@ _NON_ASCII_HOST = re.compile(r"https?://[^/\s'\"<>]*[^\x00-\x7f]")
 _OMITTED_RE = re.compile(r"^(?P<name>.+) \((?P<why>binary or unreadable|total size limit|symlink)\)$")
 
 
+# Files that are read, not run: documentation and plain configuration. The rules about commands (`code`,
+# `build`, `install` scope) match words in them (`git clone` in a README, `http {` in nginx.conf, a path in
+# an XML file) without any command being run. Scripts, unit files and hooks stay out of this list.
+PROSE_NAMES = ("readme", "license", "copying", "news", "changelog", "authors", "contributing", "notice", "todo")
+PROSE_EXTENSIONS = (
+    ".md", ".txt", ".rst", ".1", ".5", ".8", ".po", ".pot", ".html", ".css", ".svg", ".xml", ".json", ".yaml", ".yml",
+    ".toml", ".conf", ".cfg", ".ini", ".rules", ".sysusers", ".tmpfiles", ".changelog", ".srcinfo", ".gitignore",
+)
+
+
+def is_prose(name: str) -> bool:
+    base = name.rsplit("/", 1)[-1].lower()
+    return base == "config" or base.startswith(PROSE_NAMES) or base.endswith(PROSE_EXTENSIONS)
+
+
 def _applies(scope: str, name: str) -> bool:
     is_install = name.endswith(".install")
     is_patch = name.endswith((".patch", ".diff"))
+    inert = is_patch or is_prose(name)
     return (
         scope == "all"
-        or (scope == "code" and not is_patch)
-        or (scope == "build" and not is_patch and not is_install)
+        or (scope == "code" and not inert)
+        or (scope == "build" and not inert and not is_install)
         or (scope == "install" and is_install)
     )
 
@@ -471,6 +487,8 @@ def _scan_lines(parsed: ParsedFile) -> list[Finding]:
         stripped = unit.text.strip()
         long_line = len(stripped) > MAX_PATTERN_LINE
         for rule in rules:
+            if unit.heredoc and rule.scope != "all":
+                continue                        # text being written to a file: only the rules that apply everywhere
             if rule.fallback and parsed.understood(unit.number):
                 continue
             if not (rule.comments or not unit.comment):
@@ -705,7 +723,7 @@ DATA_NAME_PREFIXES = ("pkgbuild", "license", "copying", "readme", "news", "chang
 
 def _file_gap(name: str) -> list[Finding]:
     base = name.rsplit("/", 1)[-1].lower()
-    if base.startswith(DATA_NAME_PREFIXES) or base.endswith(DATA_EXTENSIONS):
+    if base.startswith(DATA_NAME_PREFIXES) or base.endswith(DATA_EXTENSIONS) or is_prose(name):
         return []
     return [Finding("caution", f"Script or unrecognised file shipped in the repository; only pattern-checked, not understood: {name}", name, None, "unanalyzed-file")]
 
