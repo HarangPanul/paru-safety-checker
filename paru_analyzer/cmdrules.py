@@ -361,38 +361,38 @@ def immutable_attr(ctx: Ctx) -> bool:
 
 
 CMD_RULES: tuple[CmdRule, ...] = (
-    CmdRule("pipe-to-shell", "danger", "Downloads remote code and executes it directly", pipe_to_shell, "all"),
-    CmdRule("base64-exec", "danger", "Decodes an obfuscated payload and executes it", base64_exec, "all"),
-    CmdRule("decode-exec", "danger", "Decodes or decompresses a hidden payload and executes it", decode_exec, "all"),
-    CmdRule("network-pipe-shell", "danger", "Pipes data from a raw network connection into a shell", network_pipe_shell, "all"),
-    CmdRule("fetched-xargs-exec", "danger", "Hands downloaded data to a shell or interpreter through xargs", xargs_exec, "all"),
-    CmdRule("echo-to-shell", "caution", "Pipes a string into a shell", echo_to_shell, "code"),
-    CmdRule("sudoers-passwd-write", "danger", "Writes to sudoers or the account databases", account_write),
-    CmdRule("pacman-config-write", "danger", "Modifies pacman/makepkg configuration or its keyring directly", pacman_config_write),
-    CmdRule("setuid-shell", "danger", "Sets the setuid bit on a shell/interpreter (privilege-escalation backdoor)", setuid_shell),
-    CmdRule("rm-root", "danger", "Deletes the root or home directory", rm_root, "all"),
-    CmdRule("rm-system-dir", "danger", "Deletes a top-level system directory", rm_system_dir),
-    CmdRule("home-persistence-write", "danger",
+    CmdRule("pipe-to-shell", "warning", "Downloads remote code and executes it directly", pipe_to_shell, "all"),
+    CmdRule("base64-exec", "warning", "Decodes an obfuscated payload and executes it", base64_exec, "all"),
+    CmdRule("decode-exec", "warning", "Decodes or decompresses a hidden payload and executes it", decode_exec, "all"),
+    CmdRule("network-pipe-shell", "warning", "Pipes data from a raw network connection into a shell", network_pipe_shell, "all"),
+    CmdRule("fetched-xargs-exec", "warning", "Hands downloaded data to a shell or interpreter through xargs", xargs_exec, "all"),
+    CmdRule("echo-to-shell", "info", "Pipes a string into a shell", echo_to_shell, "code"),
+    CmdRule("sudoers-passwd-write", "warning", "Writes to sudoers or the account databases", account_write),
+    CmdRule("pacman-config-write", "warning", "Modifies pacman/makepkg configuration or its keyring directly", pacman_config_write),
+    CmdRule("setuid-shell", "warning", "Sets the setuid bit on a shell/interpreter (privilege-escalation backdoor)", setuid_shell),
+    CmdRule("rm-root", "warning", "Deletes the root or home directory", rm_root, "all"),
+    CmdRule("rm-system-dir", "warning", "Deletes a top-level system directory", rm_system_dir),
+    CmdRule("home-persistence-write", "warning",
             "Writes to a shell rc, autostart entry, user unit or authorized_keys from the build", home_persistence_write, "build"),
-    CmdRule("sudo", "caution", "Calls sudo/su; packaging scripts should not", uses_privilege, outer_only=True),
-    CmdRule("setuid", "caution", "Sets the setuid/setgid bit", setuid_bit),
-    CmdRule("exec-from-tmp", "caution", "Makes executable or runs files from a world-writable directory", exec_from_temp),
-    CmdRule("kernel-module", "caution", "Loads or unloads kernel modules", _named("insmod", "rmmod", "modprobe")),
-    CmdRule("setcap", "caution", "Grants file capabilities", _named("setcap")),
-    CmdRule("sudoers-remove", "caution",
+    CmdRule("sudo", "info", "Calls sudo/su; packaging scripts should not", uses_privilege, outer_only=True),
+    CmdRule("setuid", "info", "Sets the setuid/setgid bit", setuid_bit),
+    CmdRule("exec-from-tmp", "info", "Makes executable or runs files from a world-writable directory", exec_from_temp),
+    CmdRule("kernel-module", "info", "Loads or unloads kernel modules", _named("insmod", "rmmod", "modprobe")),
+    CmdRule("setcap", "info", "Grants file capabilities", _named("setcap")),
+    CmdRule("sudoers-remove", "info",
             "Deletes a file under /etc/sudoers.d (it may hold a restriction, or belong to someone else)", sudoers_remove),
-    CmdRule("apparmor-unload", "caution", "Unloads an AppArmor profile", apparmor_unload),
-    CmdRule("home-delete", "caution", "Deletes files in the user's home", home_delete),
-    CmdRule("install-hook-persistence", "caution", "Install hook sets up persistence (cron, services, shell rc)",
+    CmdRule("apparmor-unload", "info", "Unloads an AppArmor profile", apparmor_unload),
+    CmdRule("home-delete", "info", "Deletes files in the user's home", home_delete),
+    CmdRule("install-hook-persistence", "info", "Install hook sets up persistence (cron, services, shell rc)",
             hook_persistence, "install"),
-    CmdRule("pacman-key", "caution", "Changes the pacman trust keyring", _named("pacman-key")),
-    CmdRule("chattr-immutable", "caution", "Makes files immutable (hard to remove)", immutable_attr),
-    CmdRule("user-management", "caution", "Creates or modifies system users",
+    CmdRule("pacman-key", "info", "Changes the pacman trust keyring", _named("pacman-key")),
+    CmdRule("chattr-immutable", "info", "Makes files immutable (hard to remove)", immutable_attr),
+    CmdRule("user-management", "info", "Creates or modifies system users",
             _named("useradd", "usermod", "adduser", "chpasswd", "gpasswd")),
-    CmdRule("background-exec", "caution", "Starts processes that outlive the build or install",
+    CmdRule("background-exec", "info", "Starts processes that outlive the build or install",
             _named("nohup", "setsid", "disown"), outer_only=True),
-    CmdRule("live-system-write", "caution", "Writes to the live system instead of $pkgdir", live_system_write, "build"),
-    CmdRule("install-system-files", "caution", "Install hook edits sensitive system files", hook_system_files, "install"),
+    CmdRule("live-system-write", "info", "Writes to the live system instead of $pkgdir", live_system_write, "build"),
+    CmdRule("install-system-files", "info", "Install hook edits sensitive system files", hook_system_files, "install"),
 )
 
 IDS = frozenset(r.id for r in CMD_RULES)
@@ -471,7 +471,7 @@ def fetch_then_execute(parsed: ParsedFile) -> list[Finding]:
             hit = _runs(view, fetched)
             if hit and pc.line not in reported:
                 reported.add(pc.line)
-                findings.append(Finding("danger", f"Downloads a file and then executes it ({hit}, fetched on line "
+                findings.append(Finding("warning", f"Downloads a file and then executes it ({hit}, fetched on line "
                                         f"{fetched[hit]}): {pc.text.strip()[:120]}", parsed.name, pc.line, "fetch-then-execute"))
             for path in _fetched_files(view):
                 fetched.setdefault(posixpath.normpath(path), pc.line)

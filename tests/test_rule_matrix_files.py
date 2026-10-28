@@ -224,5 +224,5 @@ def test_fires(case):
 @pytest.mark.parametrize("case", [c for c in CASES if _case(c)[2] == "!"], ids=lambda c: _case(c)[1].strip()[:60])
 def test_quiet(case):
     name, text, _ = _case(case)
-    loud = [(f.rule, f.severity) for f in scan({name: text}) if f.severity in ("danger", "caution") and f.rule not in ROUTINE]
+    loud = [(f.rule, f.severity) for f in scan({name: text}) if f.severity in ("warning", "info") and f.rule not in ROUTINE]
     assert not loud

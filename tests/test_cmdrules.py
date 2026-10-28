@@ -213,7 +213,7 @@ def test_padding_does_not_hide_a_pipe_from_the_parsed_rule():
     start = time.time()
     findings = scan({"PKGBUILD": text})
     assert time.time() - start < 5
-    assert any(f.rule == "pipe-to-shell" and f.severity == "danger" for f in findings)
+    assert any(f.rule == "pipe-to-shell" and f.severity == "warning" for f in findings)
 
 
 def test_every_pattern_with_an_open_gap_is_marked_risky():
@@ -234,7 +234,7 @@ def test_every_pattern_with_an_open_gap_is_marked_risky():
 ])
 def test_a_downloaded_file_that_is_then_executed_is_danger(line):
     hits = [f for f in run(line) if f.rule == "fetch-then-execute"]
-    assert hits and hits[0].severity == "danger"
+    assert hits and hits[0].severity == "warning"
     assert "fetched on line" in hits[0].message
 
 
@@ -257,7 +257,7 @@ def test_downloading_without_running_the_file_is_not_fetch_then_execute(line):
 ])
 def test_a_build_that_writes_a_file_the_session_loads_is_danger(line):
     hits = [f for f in run(line) if f.rule == "home-persistence-write"]
-    assert hits and hits[0].severity == "danger"
+    assert hits and hits[0].severity == "warning"
 
 
 @pytest.mark.parametrize("line", [
@@ -278,7 +278,7 @@ def test_install_hook_persistence_keeps_its_own_caution():
 def test_long_unparseable_lines_are_read_in_windows():
     broken = "build() {\n  echo \"unterminated\n  "
     near = scan({"PKGBUILD": broken + "curl x |" + " " * 300 + "sh" + " ;" * 1500 + "\n}\n"})
-    assert any(f.rule == "pipe-to-shell" and f.severity == "danger" for f in near)
+    assert any(f.rule == "pipe-to-shell" and f.severity == "warning" for f in near)
     start = time.time()
     scan({"PKGBUILD": broken + "curl x | " * 6000 + "cat\n}\n"})
     assert time.time() - start < 5
@@ -376,7 +376,7 @@ def test_quoted_text_that_mentions_a_pipe_is_not_echo_to_shell():
     ("config", 'CONFIG_MODPROBE_PATH="/sbin/modprobe"\n'),
 ])
 def test_documentation_and_plain_config_are_not_read_as_commands(name, body):
-    assert not [f for f in scan({name: body}) if f.severity in ("danger", "caution")]
+    assert not [f for f in scan({name: body}) if f.severity in ("warning", "info")]
 
 
 @pytest.mark.parametrize("name,body,rule", [

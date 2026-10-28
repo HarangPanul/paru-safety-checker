@@ -137,7 +137,7 @@ def test_truncated_and_overlong():
 def test_marks_sit_on_a_separate_layer_and_point_at_steps(built):
     assert "marks" in built and all(k not in built["steps"][0] for k in ("rule", "severity"))
     pipe = [m for m in built["marks"] if m["rule"] == "pipe-to-shell"][0]
-    assert pipe["step"] == step(built, "curl")["id"] and pipe["severity"] == "danger"
+    assert pipe["step"] == step(built, "curl")["id"] and pipe["severity"] == "warning"
 
 
 # ---- invariants of docs/IR.md ----

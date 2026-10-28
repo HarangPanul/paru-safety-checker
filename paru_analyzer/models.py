@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-LEVELS = ("safe", "caution", "danger")
+LEVELS = ("clear", "info", "warning")
 
 VERDICT_SCHEMA = {
     "type": "object",

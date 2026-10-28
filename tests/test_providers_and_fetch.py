@@ -35,13 +35,13 @@ def test_claude_parses_tool_use(monkeypatch):
         seen["body"] = json.loads(request.data)
         seen["key"] = request.get_header("X-api-key")
         return FakeResponse(json.dumps(tool_use({
-            "level": "danger", "summary": "bad",
-            "findings": [{"severity": "danger", "message": "curl|sh", "file": "PKGBUILD", "line": 4}],
+            "level": "warning", "summary": "bad",
+            "findings": [{"severity": "warning", "message": "curl|sh", "file": "PKGBUILD", "line": 4}],
         })).encode())
 
     monkeypatch.setattr(claude_mod.urllib.request, "urlopen", fake_urlopen)
     verdict = ClaudeProvider(api_key="k").analyze("foo", {"PKGBUILD": "x"})
-    assert verdict.level == "danger" and verdict.findings[0].line == 4
+    assert verdict.level == "warning" and verdict.findings[0].line == 4
     assert seen["key"] == "k"
     assert seen["body"]["tool_choice"] == {"type": "tool", "name": "report_verdict"}
 
@@ -81,7 +81,7 @@ def test_prompt_uses_unique_nonce_markers():
 
 def test_verdict_from_dict_rejects_bad_severity():
     with pytest.raises(ValueError):
-        Verdict.from_dict({"level": "safe", "summary": "", "findings": [{"severity": "x", "message": "m"}]})
+        Verdict.from_dict({"level": "clear", "summary": "", "findings": [{"severity": "x", "message": "m"}]})
 
 
 def test_collect_files_order_and_limits(tmp_path):
@@ -106,9 +106,9 @@ def test_valid_package_name(name, ok):
 
 def test_prompt_includes_prescan_findings():
     from paru_analyzer.models import Finding
-    prompt = build_user_prompt("foo", {"PKGBUILD": "x"}, [Finding("caution", "uses sudo", "PKGBUILD", 3, "sudo")],
+    prompt = build_user_prompt("foo", {"PKGBUILD": "x"}, [Finding("info", "uses sudo", "PKGBUILD", 3, "sudo")],
                                inventory="[network] PKGBUILD:2 downloads source https://x")
-    assert "Scanner findings already reported" in prompt and "[caution] sudo PKGBUILD:3" in prompt
+    assert "Scanner findings already reported" in prompt and "[info] sudo PKGBUILD:3" in prompt
     assert "Scanner inventory" in prompt and "downloads source https://x" in prompt
 
 

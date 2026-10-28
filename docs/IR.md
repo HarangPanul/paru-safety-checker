@@ -103,7 +103,7 @@ PKGBUILD 한 묶음을 **한 번 파싱한 사실의 목록**으로 만들고, �
   ],
 
   "marks": [                               // 규칙·허용 목록이 표시한 곳 (IR 위의 별도 층)
-    { "rule": "pipe-to-shell", "severity": "danger", "step": "s2", "line": 16, "message": "..." }
+    { "rule": "pipe-to-shell", "severity": "warning", "step": "s2", "line": 16, "message": "..." }
   ]
 }
 ```

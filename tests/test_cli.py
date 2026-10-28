@@ -32,9 +32,9 @@ def run(argv, provider, answers=(), files=None, in_repo=lambda p: False, fetcher
     return code, ran
 
 
-safe = Verdict("safe", "ok")
-caution = Verdict("caution", "hmm", [Finding("caution", "odd", "PKGBUILD", 3)])
-danger = Verdict("danger", "bad", [Finding("danger", "curl|sh", "PKGBUILD", 9)])
+safe = Verdict("clear", "ok")
+caution = Verdict("info", "hmm", [Finding("info", "odd", "PKGBUILD", 3)])
+danger = Verdict("warning", "bad", [Finding("warning", "curl|sh", "PKGBUILD", 9)])
 
 
 @pytest.mark.parametrize("args,expected", [
@@ -207,9 +207,9 @@ def test_a_package_with_a_remote_source_always_asks_the_user():
 
 
 def test_ai_findings_count_even_when_its_headline_says_safe():
-    inconsistent = Verdict("safe", "fine", [Finding("danger", "but actually curl|sh", "PKGBUILD", 2)])
+    inconsistent = Verdict("clear", "fine", [Finding("warning", "but actually curl|sh", "PKGBUILD", 2)])
     assert run(["-S", "foo"], FakeProvider(inconsistent), answers=["no"]) == (1, [])
-    inconsistent = Verdict("safe", "fine", [Finding("caution", "hmm", "PKGBUILD", 2)])
+    inconsistent = Verdict("clear", "fine", [Finding("info", "hmm", "PKGBUILD", 2)])
     assert run(["-S", "foo"], FakeProvider(inconsistent), answers=["n"]) == (1, [])
 
 
@@ -262,9 +262,27 @@ def test_verbose_lists_routine_operations(capsys):
     assert "write $pkgdir/usr/bin/foo" in capsys.readouterr().err
 
 
-def test_lowest_level_is_shown_as_no_findings_not_safe():
+def test_levels_are_shown_bracketed_with_symbols_and_the_lowest_is_not_called_safe():
     from paru_analyzer.models import Verdict
     from paru_analyzer.report import format_verdict
-    text = format_verdict("pkg", Verdict("safe", "nothing marked", []))
-    assert "NO FINDINGS" in text and "SAFE" not in text
-    assert "DANGER" in format_verdict("pkg", Verdict("danger", "x", []))
+    text = format_verdict("pkg", Verdict("clear", "nothing marked", []))
+    assert text.startswith("[clear] ") and "safe" not in text.split(":")[0].lower()
+    assert format_verdict("pkg", Verdict("info", "x", [])).startswith("[! info] ")
+    assert format_verdict("pkg", Verdict("warning", "x", [])).startswith("[!! warning] ")
+
+
+def test_colour_only_on_a_terminal_and_never_with_no_color(monkeypatch):
+    import sys
+    from paru_analyzer import report
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False, raising=False)
+    assert report.label("warning") == "[!! warning]"
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    assert report.label("warning") == "\033[31m[!! warning]\033[0m"
+    assert report.label("info") == "\033[33m[! info]\033[0m"
+    assert report.label("clear") == "[clear]"
+    monkeypatch.setenv("TERM", "xterm-256color")
+    assert report.label("info") == "\033[38;5;208m[! info]\033[0m"
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert report.label("info") == "[! info]"

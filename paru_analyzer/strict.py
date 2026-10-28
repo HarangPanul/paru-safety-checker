@@ -4,7 +4,7 @@ The regex rules in heuristics.py look for known-bad patterns, so anything new pa
 This module inverts that: every command the script runs must be on a list of ordinary
 packaging tools, used in an ordinary way. Whatever cannot be recognised (an unknown command,
 a command built from a variable, inline interpreter code, code at the top level, shell that
-does not even parse) is reported, so that "not understood" can never end up as "safe".
+does not even parse) is reported, so that "not understood" can never end up as "clear".
 """
 from __future__ import annotations
 
@@ -231,7 +231,7 @@ def scan_strict(name: str, source) -> list[Finding]:
     def add(rule: str, message: str, line: int, key: str) -> None:
         if (rule, key) not in seen:
             seen.add((rule, key))
-            findings.append(Finding("caution", message, name, line, rule))
+            findings.append(Finding("info", message, name, line, rule))
 
     for step in parsed.steps:
         shown = step.text[:100]

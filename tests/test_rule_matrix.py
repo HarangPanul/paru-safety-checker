@@ -300,5 +300,5 @@ def test_fires(line, rule):
 
 @pytest.mark.parametrize("line", MUST_BE_QUIET)
 def test_quiet(line):
-    loud = [(f.rule, f.severity) for f in findings(line) if f.severity in ("danger", "caution") and f.rule not in ROUTINE]
+    loud = [(f.rule, f.severity) for f in findings(line) if f.severity in ("warning", "info") and f.rule not in ROUTINE]
     assert not loud

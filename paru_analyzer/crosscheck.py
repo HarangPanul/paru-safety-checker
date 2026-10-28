@@ -63,11 +63,11 @@ def crosscheck(name: str, text: str, pre: Preprocessed, run: Runner = run_bash) 
     try:
         code, out, err = run(text)
     except (OSError, subprocess.SubprocessError) as exc:
-        return [Finding("caution", f"Could not cross-check the parse with bash ({type(exc).__name__}); is bash 4.4 or newer installed?",
+        return [Finding("info", f"Could not cross-check the parse with bash ({type(exc).__name__}); is bash 4.4 or newer installed?",
                         name, None, "crosscheck-unavailable")]
     if code != 0:
         message = (err.strip().splitlines() or ["syntax error"])[0][:160]
-        return [Finding("caution", f"bash cannot parse this file, so it was not cross-checked: {message}", name, None, "bash-syntax-error")]
+        return [Finding("info", f"bash cannot parse this file, so it was not cross-checked: {message}", name, None, "bash-syntax-error")]
     ours, theirs = our_words(pre), words(out)
     if ours == theirs:
         return []
@@ -78,5 +78,5 @@ def crosscheck(name: str, text: str, pre: Preprocessed, run: Runner = run_bash) 
         detail.append("bash sees " + ", ".join(only_bash) + " that the scanner dropped")
     if only_ours:
         detail.append("the scanner kept " + ", ".join(only_ours) + " that bash does not")
-    return [Finding("caution", f"The scanner and bash read this file differently ({'; '.join(detail)}); code may be hidden from the review",
+    return [Finding("info", f"The scanner and bash read this file differently ({'; '.join(detail)}); code may be hidden from the review",
                     name, None, "parser-mismatch")]

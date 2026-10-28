@@ -41,17 +41,17 @@ from rules shaped like `A[^\n]*B`: for every `A` the engine retries `[^\n]*` to 
 `install-system-files`, `live-system-write`, and the pipe rules) are decided on parsed commands in
 `cmdrules.py`, which is linear. Their patterns remain only as a fallback for lines the parser cannot read.
 Every pattern with an open-ended gap is marked `risky` and is **not run on a line longer than 2000
-characters**; that line gets an `overlong-line` caution instead. The 60 KB lines of `echo >a`, `curl x |`,
+characters**; that line gets an `overlong-line` finding (info) instead. The 60 KB lines of `echo >a`, `curl x |`,
 `fsockopen`, `tar ~` and 60,000 spaces inside `curl x ... | sh` all scan in under a second
 (`test_long_lines_are_bounded`, `test_padding_does_not_hide_a_pipe_from_the_parsed_rule`).
 
 **Still true:** on a line over 2000 characters, a finding that only a skipped open-gap pattern could make
-(for example `exfil-in-url`) is reduced to the `overlong-line` caution. The parsed-command rules and the
+(for example `exfil-in-url`) is reduced to the `overlong-line` finding. The parsed-command rules and the
 default-deny layer still read the whole line. When the shell does not parse (`pre.ok == False`) the
 structured rules have nothing to read, so the patterns are the only rule layer left. On a line over 2000
 characters they are run in overlapping 1000-character windows instead of being skipped. A match whose parts
 are more than about 500 characters apart can fall between windows, so a file that is both unparseable and
-padded that wide reaches the user as the `unparseable-shell` and `overlong-line` cautions, not as a danger.
+padded that wide reaches the user as the `unparseable-shell` and `overlong-line` findings (info), not as a warning.
 
 ## 3. The reviewed PKGBUILD and the built PKGBUILD can differ (TOCTOU)
 
@@ -142,7 +142,7 @@ Other consequences of the design:
   `sudo` inside a generated wrapper script reports `sudo`. This is deliberate (the file is written and run
   later) but also fires on documentation heredocs.
 - **A command name built at run time** (`c=curl; $c x | sh`, `${SH:-sh}`) is reported only as
-  `dynamic-command` (a caution); the rules need the program's name.
+  `dynamic-command` (info); the rules need the program's name.
 - **Variables are expanded only when the file assigns them once** to a literal. A name assigned twice, or
   built from `$(...)`, is left alone.
 - **`curl x | sh` split by a substitution across lines** (`x=$(curl y)` on one line, `echo $x | sh` on the

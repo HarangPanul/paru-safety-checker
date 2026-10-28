@@ -74,7 +74,7 @@ def main(
     if not targets:
         return runner(args)
 
-    level = "safe"
+    level = "clear"
     unchecked: list[str] = []
     reviewed = False
     for package in targets:
@@ -100,7 +100,7 @@ def main(
             # The AI looks for what the scanner could not anticipate. It runs even when the
             # scanner already found something, because nothing here blocks the install.
             ai = provider.analyze(package, files_for_ai(files), static, inventory=inventory_for_ai(activities))
-            # it can only raise the level; findings it lists count even if its headline says "safe"
+            # it can only raise the level; findings it lists count even if its headline says "clear"
             level_now = worst(worst(verdict.level, ai.level), level_of(ai.findings))
             verdict = Verdict(level_now, ai.summary, static + ai.findings)
         except ProviderError as exc:
@@ -113,12 +113,12 @@ def main(
     # not a verdict). Riskier states need a typed "yes".
     if unchecked:
         _err(f"[paru-analyzer] NOT fully reviewed: {', '.join(unchecked)}")
-    if unchecked or level == "danger":
-        if level == "danger":
-            _err("[paru-analyzer] DANGER: at least one package was flagged as dangerous.")
+    if unchecked or level == "warning":
+        if level == "warning":
+            _err("[paru-analyzer] WARNING: at least one package was flagged with a warning.")
         if not _confirm(ask, "Install anyway? Type 'yes' to continue: ", exact="yes"):
             return 1
-    elif level == "caution":
+    elif level == "info":
         if not _confirm(ask, "Review the findings above. Continue? [y/N] "):
             return 1
     elif reviewed and not _confirm(ask, "Nothing was marked, which does not mean the package is safe. Install? [y/N] "):
@@ -144,7 +144,7 @@ def files_for_ai(files: dict[str, str]) -> dict[str, str]:
 def _dependency_findings(package: str, files: dict[str, str], targets: list[str], dep_ok: Callable[[str], bool]) -> list[Finding]:
     """paru builds AUR dependencies too, and nothing here reviews them unless they are named."""
     return [
-        Finding("caution", f"Dependency {dep} is not in the official repositories; paru will fetch and build it "
+        Finding("info", f"Dependency {dep} is not in the official repositories; paru will fetch and build it "
                            f"from the AUR without paru-analyzer reviewing it (name it on the command line to review it)",
                 "PKGBUILD", None, "unreviewed-dependency")
         for dep in dependencies(files)

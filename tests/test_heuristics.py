@@ -21,7 +21,7 @@ def pkgbuild(body):
 ])
 def test_pipe_to_shell_is_danger(line):
     findings = scan(pkgbuild(f"build() {{\n  {line}\n}}"))
-    assert any(f.rule == "pipe-to-shell" and f.severity == "danger" and f.line == 2 for f in findings)
+    assert any(f.rule == "pipe-to-shell" and f.severity == "warning" and f.line == 2 for f in findings)
 
 
 def test_continuation_lines_are_joined():
@@ -64,7 +64,7 @@ def test_other_danger_rules(line, rule):
 def test_caution_rules(line, rule):
     findings = scan(pkgbuild(f"build() {{\n  {line}\n}}"))
     assert rule in {f.rule for f in findings}
-    assert level_of(findings) == "caution"
+    assert level_of(findings) == "info"
 
 
 @pytest.mark.parametrize("line", [
@@ -131,7 +131,7 @@ def test_impersonation_name(name, hit):
 
 
 def test_known_bad_package_by_name():
-    assert level_of(scan(pkgbuild("pkgname=x\n"), package="firefox-patch-bin")) == "danger"
+    assert level_of(scan(pkgbuild("pkgname=x\n"), package="firefox-patch-bin")) == "warning"
 
 
 def test_long_blob_and_omitted_files_are_caution():
@@ -140,4 +140,4 @@ def test_long_blob_and_omitted_files_are_caution():
 
 
 def test_level_of_empty_is_safe():
-    assert level_of([]) == "safe"
+    assert level_of([]) == "clear"

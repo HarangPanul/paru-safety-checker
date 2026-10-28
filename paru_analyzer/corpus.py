@@ -247,8 +247,8 @@ def _detail_key(rule: str, finding) -> str | None:
 
 def measure(path: Path, examples: int = 3) -> dict:
     """Run the scanner over the corpus; every finding is presumed to be a false positive."""
-    levels = {"safe": 0, "caution": 0, "danger": 0}
-    flagged: dict[str, list[str]] = {"safe": [], "caution": [], "danger": []}
+    levels = {"clear": 0, "info": 0, "warning": 0}
+    flagged: dict[str, list[str]] = {"clear": [], "info": [], "warning": []}
     rules: dict[str, dict] = defaultdict(lambda: {"severity": "", "findings": 0, "packages": set(), "examples": []})
     details: dict[str, Counter] = {rule: Counter() for rule in DETAIL_KEYS}
     total = 0
@@ -279,12 +279,12 @@ def measure(path: Path, examples: int = 3) -> dict:
 def format_report(report: dict) -> str:
     total = report["total"] or 1
     lines = [f"packages scanned: {report['total']}"]
-    for level in ("safe", "caution", "danger"):
+    for level in ("clear", "info", "warning"):
         count = report["levels"][level]
         lines.append(f"  {level:8} {count:5}  ({100 * count / total:.1f}%)")
     lines.append("")
-    lines.append("rules by affected packages (danger first; each hit is a presumed false positive):")
-    ordered = sorted(report["rules"].items(), key=lambda kv: (("danger", "caution").index(kv[1]["severity"]), -len(kv[1]["packages"])))
+    lines.append("rules by affected packages (warning first; each hit is a presumed false positive):")
+    ordered = sorted(report["rules"].items(), key=lambda kv: (("warning", "info").index(kv[1]["severity"]), -len(kv[1]["packages"])))
     for rule, entry in ordered:
         lines.append(f"  [{entry['severity']}] {rule}: {len(entry['packages'])} packages, {entry['findings']} findings")
         lines.extend(f"      {example}" for example in entry["examples"])
@@ -292,12 +292,12 @@ def format_report(report: dict) -> str:
         lines.append("")
         lines.append(f"what the {rule} findings are about (top 10 of {len(counts)} shown in the JSON):")
         lines.extend(f"  {count:5}  {key}" for key, count in list(counts.items())[:10])
-    if report["flagged"]["danger"]:
+    if report["flagged"]["warning"]:
         lines.append("")
-        lines.append("danger packages (review first): " + ", ".join(report["flagged"]["danger"]))
-    if report["flagged"].get("safe"):
+        lines.append("warning packages (review first): " + ", ".join(report["flagged"]["warning"]))
+    if report["flagged"].get("clear"):
         lines.append("")
-        lines.append("safe packages (no rule fired, which is not a verdict): " + ", ".join(report["flagged"]["safe"]))
+        lines.append("clear packages (no rule fired, which is not a verdict): " + ", ".join(report["flagged"]["clear"]))
     return "\n".join(lines)
 
 
