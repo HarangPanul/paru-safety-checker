@@ -180,7 +180,7 @@ RULES: tuple[Rule, ...] = (
     _r("pacman-sig-disable", "danger", r"\bSigLevel\s*=\s*(?:Never\b|Optional\s+TrustAll\b|TrustAll\b)",
        "Disables pacman signature verification", scope="code"),
     _r("security-tool-disable", "danger",
-       r"\bufw\s+disable\b|\bsetenforce\s+0\b|\bauditctl\s+-e\s*0\b|\bapparmor_parser\s+-R\b|\baa-teardown\b"
+       r"\bufw\s+disable\b|\bsetenforce\s+0\b|\bauditctl\s+-e\s*0\b|\baa-teardown\b"
        r"|\bsystemctl\s+(?:stop|disable|mask)\s+[^\n]*\b(?:firewalld|ufw|apparmor|auditd|nftables|iptables|fail2ban|clamd|rkhunter|aide)\b"
        r"|\bpkill\s+(?:-\w+\s+)*(?:auditd|clamd|osqueryd|fail2ban\S*)",
        "Disables a firewall, auditing or security tool", scope="code"),
@@ -254,7 +254,7 @@ RULES: tuple[Rule, ...] = (
     _r("home-archive", "caution",
        r"\b(?:tar|zip|7z|7za|rar)\b[^\n]*(?:\s|=)[\"']?" + _HOME + r"(?:/|\s|[\"']|$)",
        "Archives the user's home directory", scope="code"),
-    _r("home-delete", "caution", r"\brm\s+[^\n]*" + _HOME + r"/(?:\.|\w)", "Deletes files in the user's home", scope="code"),
+    _r("home-delete", "caution", r"\brm\s+[^\n]*" + _HOME + r"/(?:\.|\w)", "Deletes files in the user's home", scope="code", fallback=True),
     _r("curl-upload", "caution",
        _FETCH + r"[^\n]*(?:\s-d\s*@|--data(?:-binary|-raw|-urlencode)?\s+@|\s-F\s+\S*=@|--upload-file|\s-T\s)",
        "Uploads a local file to a remote host", scope="code"),
@@ -314,10 +314,12 @@ RULES: tuple[Rule, ...] = (
     _r("command-hijack", "caution",
        r"\balias\s+(?:sudo|su|ssh|pacman|paru|yay|git|curl|wget|cat|ls|cd)=|^(?:function\s+)?(?:sudo|su|ssh|pacman|paru|yay)\s*\(\s*\)",
        "Shadows a common command", scope="code"),
-    _r("ld-preload-env", "caution", r"\bLD_PRELOAD\b", "Uses LD_PRELOAD", scope="code"),
+    _r("apparmor-unload", "caution", r"\bapparmor_parser\s+-\w*R\b", "Unloads an AppArmor profile", scope="code", fallback=True),
+    _r("ld-preload-env", "caution", r"\bLD_PRELOAD\s*\+?=", "Sets LD_PRELOAD", scope="code"),
     _r("path-modification", "caution", r"\bPATH\s*\+?=", "Changes PATH, so an allowed command name may resolve to a different program", scope="code"),
     _r("exec-env-var", "caution",
-       r"\b(?:BASH_ENV|PROMPT_COMMAND|PYTHONSTARTUP|PYTHONPATH|NODE_OPTIONS|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB|LD_LIBRARY_PATH|LD_AUDIT|GCONV_PATH|SHELLOPTS|PS4)\s*\+?=",
+       r"\b(?:BASH_ENV|PROMPT_COMMAND|PYTHONSTARTUP|PYTHONPATH|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB|LD_LIBRARY_PATH|LD_AUDIT|GCONV_PATH|SHELLOPTS|PS4)\s*\+?="
+       r"|\bNODE_OPTIONS\s*\+?=[^\n]*(?:--require|--import|--loader|--experimental-loader|(?:\s|=)-r\b)",
        "Sets an environment variable that makes a tool load or run other code", scope="code"),
     _r("base64-decode", "caution", r"\bbase64\s+(?:-d|--decode|-D)\b", "Decodes base64 data", scope="code"),
     _r("long-encoded-blob", "caution", r"[A-Za-z0-9+/]{200,}={0,2}", "Contains a long encoded blob that cannot be reviewed", scope="code"),
@@ -367,7 +369,7 @@ RULES: tuple[Rule, ...] = (
     _r("install-hook-persistence", "caution",
        r"\bcrontab\b|/etc/cron|\bsystemctl\b[^\n]*\b(?:enable|start)\b|"
        r"(?:~|\$HOME|/home/[^/\s]+|/root)/\.(?:bashrc|zshrc|profile|bash_profile|zprofile|config/autostart)",
-       "Install hook sets up persistence (cron, services, shell rc)", scope="install"),
+       "Install hook sets up persistence (cron, services, shell rc)", scope="install", fallback=True),
     _r("install-system-files", "caution",
        _WRITE + r"[^\n]*" + _ABS + r"(?:/etc/(?:pam\.d|ssh|ld\.so\.conf|profile|bash\.bashrc|environment|rc\.local|init\.d|crontab"
        r"|cron\.\w+|hosts|resolv\.conf|nsswitch\.conf|fstab|modules-load\.d|modprobe\.d|udev|security|pacman\.d)|/boot/|/usr/lib/security|/lib/security)",
@@ -715,6 +717,7 @@ DATA_EXTENSIONS = (
     ".service", ".socket", ".timer", ".path", ".target", ".mount", ".desktop", ".conf", ".cfg", ".ini", ".toml",
     ".yaml", ".yml", ".json", ".xml", ".txt", ".md", ".rst", ".sysusers", ".tmpfiles", ".rules", ".hook", ".patch",
     ".diff", ".install", ".gitignore", ".srcinfo", ".svg", ".po", ".pot", ".html", ".css", ".1", ".5", ".8",
+    ".asc", ".sig", ".sign", ".gpg", ".pub", ".pem", ".crt", ".keyring", ".aurinfo",
 )
 DATA_NAME_PREFIXES = ("pkgbuild", "license", "copying", "readme", "news", "changelog", "authors", ".srcinfo", ".gitignore", ".nvchecker")
 

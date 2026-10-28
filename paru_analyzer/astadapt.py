@@ -280,7 +280,9 @@ class _Collector:
         self.subs = []
 
 
-DECLARATIONS = frozenset({"export", "declare", "readonly", "unset", "typeset"})
+DECLARATIONS = frozenset({"export", "declare", "readonly", "unset", "typeset",
+                          # builtins that run nothing: the idiom `: "${arch[@]}"`, tests, options
+                          ":", "[", "[[", "test", "set", "shopt", "true", "false"})
 
 
 def _has_heredoc(node) -> bool:

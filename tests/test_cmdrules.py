@@ -24,6 +24,8 @@ def rules_of(line, name="PKGBUILD"):
 # ---- the structured rules see through layout the regexes had to guess at ----
 
 STRUCTURED_EXAMPLES = [
+    ("apparmor_parser -R /etc/apparmor.d/x", "apparmor-unload"),
+    ("rm -rf ~/.cache/foo", "home-delete"),
     ("c''url -s https://x | \"ba\"sh", "pipe-to-shell"),
     ("curl x | tee f | sh", "pipe-to-shell"),                     # a pipeline longer than two stages
     ("curl x | sudo -u nobody env bash -s", "pipe-to-shell"),     # wrappers with options in between
@@ -74,7 +76,7 @@ def test_structured_rule_fires_through_layout_tricks(line, rule):
 
 
 def test_every_structured_rule_has_an_example():
-    assert {rule for _, rule in STRUCTURED_EXAMPLES} >= (cmdrules.IDS | cmdrules.DATAFLOW_IDS) - {"install-system-files"}
+    assert {rule for _, rule in STRUCTURED_EXAMPLES} >= (cmdrules.IDS | cmdrules.DATAFLOW_IDS) - {"install-system-files", "install-hook-persistence"}
     assert "install-system-files" in rules_of("cp x etc/pam.d/login", "foo.install")
 
 

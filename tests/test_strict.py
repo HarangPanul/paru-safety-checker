@@ -61,7 +61,9 @@ def test_piped_flag_and_unparseable_text():
     ("  nc -h", "unknown-command"),
     ("  mount -o bind a b", "unknown-command"),
     ("  dd if=/dev/zero of=img", "unknown-command"),
-    ("  awk 'BEGIN{system(\"id\")}'", "unknown-command"),
+    ("  awk 'BEGIN{system(\"id\")}'", "inline-code"),
+    ("  awk '{print | \"sh\"}' x", "inline-code"),
+    ("  awk -f prog.awk x", "inline-code"),
     ("  bash script.sh", "unknown-command"),
     ("  sh -c 'id'", "unknown-command"),
     ("  eval \"$x\"", "unknown-command"),
@@ -157,12 +159,17 @@ def test_each_unknown_command_is_reported_once_per_file():
 # ---- top level ----
 
 def test_toplevel_code_and_parse_time_substitutions():
-    text = "pkgname=x\nexport A=1\nif [ -f /etc/os-release ]; then\n  pkgname=y\nfi\nbuild() { :; }\n"
+    text = "pkgname=x\nexport A=1\nif pacman -T foo; then\n  pkgname=y\nfi\nbuild() { :; }\n"
     findings = scan_strict("PKGBUILD", text)
     # the condition runs at parse time; the assignment inside is a declaration; `if`/`fi` are not commands
     assert {(f.rule, f.line) for f in findings} == {("toplevel-code", 3)}
-    sub = "pkgver=$(date +%Y)\nsource=(\"x-$(uname -m).tgz\")\n"
+    # tests and options run nothing
+    quiet = "pkgname=x\nif [ -f /etc/os-release ]; then\n  pkgname=y\nfi\nshopt -s extglob\n: \"${arch[@]}\"\nset -e\nbuild() { :; }\n"
+    assert scan_strict("PKGBUILD", quiet) == []
+    sub = "pkgver=$(evilbin +%Y)\nsource=(\"x-$(curl -s y).tgz\")\n"
     assert {f.rule for f in scan_strict("PKGBUILD", sub)} == {"parse-time-command"}
+    harmless = "pkgver=$(date +%Y)\nsource=(\"x-$(uname -m).tgz\")\nbold=\"$(tput bold)\"\n"
+    assert scan_strict("PKGBUILD", harmless) == []
     assert [f.line for f in scan_strict("PKGBUILD", sub)] == [1, 2]
 
 
@@ -252,3 +259,19 @@ def test_an_analyzer_failure_keeps_earlier_findings_and_adds_a_warning(monkeypat
     rules = {f.rule for f in findings}
     assert {"pipe-to-shell", "analyzer-error"} <= rules
     assert level_of(findings) == "danger"
+
+
+# ---- commands that were noise in the corpus ----
+
+@pytest.mark.parametrize("body", [
+    "  arch-meson . build", "  msg2 'building'", "  warning x", "  vercmp 1 2", "  ./autogen.sh --prefix=/usr", "  setcap cap_net_raw+ep x",
+    "  awk '{print $1}' f", "  gawk -F: '{print $2}' f", "  pacman -T foo >/dev/null", "  pacman -Q foo", "  pacman -Si foo",
+    "  for i in a b; do continue; done",
+])
+def test_ordinary_packaging_helpers_are_allowed(body):
+    assert strict_rules(body) == set()
+
+
+@pytest.mark.parametrize("body", ["  pacman -S foo", "  pacman -Syu", "  pacman -U x.pkg.tar.zst", "  pacman -R foo"])
+def test_pacman_that_changes_the_system_is_still_reported(body):
+    assert "unknown-command" in strict_rules(body)

@@ -176,8 +176,8 @@ def test_install_hooks_are_reported_in_full():
 
 def test_parse_time_code_is_reported():
     files = pkg("pkgver=$(date +%Y)\nif true; then\n  :\nfi\n")
-    # the substitution line, the `true` after `if`, and `:`; the `if`/`fi` keywords are not commands
-    assert len(texts(files, "parse-time")) == 3
+    # only the substitution line: `true` and `:` run nothing, and `if`/`fi` are keywords
+    assert texts(files, "parse-time") == ["runs when the file is parsed: pkgver=$(date +%Y)"]
 
 
 def test_commands_are_listed_once_with_counts():

@@ -16,7 +16,9 @@ from .models import Finding
 
 BUILD_ALLOWED = frozenset("""
 cd pushd popd pwd echo printf true false : test export unset local declare readonly set shopt shift return exit
-hash type read let wait
+hash type read let wait continue break
+msg msg2 warning error plain plainerr vercmp awk gawk mawk arch-meson setcap
+./autogen.sh ./bootstrap ./bootstrap.sh ./buildconf ./waf ./b2 ./bjam
 ls cat cp mv rm mkdir rmdir ln install chmod chown chgrp touch find xargs sed grep egrep fgrep sort uniq head tail
 wc tr cut tee basename dirname readlink realpath date nproc uname id which stat du df diff cmp patch
 tar unzip zip bsdtar gzip gunzip bzip2 bunzip2 xz unxz zstd 7z 7za cpio ar strip objcopy objdump readelf nm
@@ -41,6 +43,7 @@ rm mkdir rmdir ln cp mv chmod chown touch grep getent id cat
 ldconfig update-desktop-database update-mime-database gtk-update-icon-cache gtk4-update-icon-cache
 glib-compile-schemas fc-cache depmod systemd-sysusers systemd-tmpfiles systemctl udevadm
 xdg-icon-resource xdg-desktop-menu xdg-mime gio gdk-pixbuf-query-loaders
+command type aa-enabled setcap
 """.split())
 
 GIT_SAFE = frozenset("""rev-parse rev-list describe log show status config apply init add diff ls-files cat-file
@@ -152,6 +155,21 @@ def _sed_script_is_active(args: list[str]) -> bool:
     return False
 
 
+AWK_ACTIVE = re.compile(r"\bsystem\s*\(|\|\s*getline\b|\bprintf?\b[^;}\n]*\|\s*[\"$\w]|\|&")
+AWKS = frozenset({"awk", "gawk", "mawk"})
+PACMAN_READ_ONLY = re.compile(r"^(?:--(?:query|deptest|sync)\b.*|-[A-Za-z]*[TQ][A-Za-z]*|-S[iqslgp]+)$")
+# commands whose output is harmless to compute while the file is merely parsed (`bold="$(tput bold)"`)
+PARSE_TIME_SAFE = frozenset("tput echo printf date uname nproc basename dirname pwd id whoami hostname tr cut head tail wc sort uniq expr seq".split())
+
+
+def _awk_script_is_active(args: list[str]) -> bool:
+    """awk can run commands (system, `| getline`, `print | "cmd"`); a program read from a file (-f) is not visible."""
+    for arg in args:
+        if arg == "-f" or arg.startswith("--file") or (arg.startswith("-f") and len(arg) > 2 and not arg.startswith("-F")):
+            return True
+    return any(AWK_ACTIVE.search(a) for a in args if not a.startswith("-"))
+
+
 def classify(command: Command, allowed: frozenset[str], local_functions: set[str]) -> tuple[str, str] | None:
     """(rule, message) if the command is not an ordinary packaging step, else None."""
     raw = command.name
@@ -164,6 +182,10 @@ def classify(command: Command, allowed: frozenset[str], local_functions: set[str
         return None
     if name == "sed" and _sed_script_is_active(command.args):
         return "inline-code", "sed script can run commands or write/read files (e, w, r)"
+    if name in AWKS and _awk_script_is_active(command.args):
+        return "inline-code", f"{name} program can run commands (system, getline, a pipe) or is read from a file"
+    if name == "pacman" and command.args and PACMAN_READ_ONLY.match(next((a for a in command.args if a.startswith("-")), "")):
+        return None
     if name == "find" and any(a in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in command.args):
         return "inline-code", "find writes its output to a file"
     if name in ("tar", "bsdtar") and any(TAR_EXEC_OPTIONS.match(a) or a == "-I" for a in command.args):
@@ -215,7 +237,8 @@ def scan_strict(name: str, source) -> list[Finding]:
         shown = step.text[:100]
         if step.toplevel_code:
             add("toplevel-code", f"Code outside any function runs when the file is merely parsed: {shown}", step.line, str(step.line))
-        if step.parse_time_substitution:
+        if step.parse_time_substitution and not (
+                step.parse_time and all(_normalise(c.name) in PARSE_TIME_SAFE for c in step.parse_time)):
             label = step.parse_time[0].name if step.parse_time else "?"
             add("parse-time-command", f"A command substitution runs at parse time ({label}): {shown}", step.line, str(step.line))
         if not step.ok:

@@ -94,10 +94,15 @@ def known(ctx: Ctx, text: str) -> str:
     return expand(text, ctx.parsed.stable_variables) if "$" in text else text
 
 
+def changed(ctx: Ctx) -> list[tuple[str, str]]:
+    """(verb, resolved path) for every path this command writes or deletes."""
+    return [(verb, resolve(known(ctx, path), ctx.hook))
+            for verb, path in file_accesses(ctx.view, ctx.hook) if verb in ("write", "delete")]
+
+
 def written(ctx: Ctx) -> list[str]:
     """Resolved paths this command writes or deletes."""
-    return [resolve(known(ctx, path), ctx.hook)
-            for verb, path in file_accesses(ctx.view, ctx.hook) if verb in ("write", "delete")]
+    return [path for _, path in changed(ctx)]
 
 
 def in_temp(path: str, hook: bool = False) -> bool:
@@ -246,8 +251,35 @@ def live_system_write(ctx: Ctx) -> bool:
     return any(live_path(p) for p in written(ctx))
 
 
+OWN_SUDOERS_FILE = re.compile(r"^/etc/sudoers\.d/[^/*?\[]+$")
+HOME_FILE = re.compile(r"^(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)/(?:\.|\w)")
+
+
 def account_write(ctx: Ctx) -> bool:
-    return any(ACCOUNT_FILES.match(p) for p in written(ctx))
+    """Writes sudoers or the account databases. Removing one file under /etc/sudoers.d is what an uninstall
+    hook does with the rule the package added, and takes privileges away rather than adding them."""
+    return any(ACCOUNT_FILES.match(p) and not (verb == "delete" and OWN_SUDOERS_FILE.match(p)) for verb, p in changed(ctx))
+
+
+def home_delete(ctx: Ctx) -> bool:
+    return any(verb == "delete" and HOME_FILE.match(p) for verb, p in changed(ctx))
+
+
+PERSISTENT_SYSTEMCTL = frozenset({"enable", "reenable", "start", "restart", "link"})
+
+
+def hook_persistence(ctx: Ctx) -> bool:
+    """An install hook that starts a service, installs a cron job or edits one. A message that only
+    mentions the command (`echo "run: systemctl enable x"`) is not that."""
+    if ctx.name == "crontab":
+        return True
+    if ctx.name == "systemctl" and any(a in PERSISTENT_SYSTEMCTL for a in ctx.view.args):
+        return True
+    return any(re.match(r"^/etc/(?:cron|anacron)", p) or HOME_PERSISTENCE.match(p) for p in written(ctx))
+
+
+def apparmor_unload(ctx: Ctx) -> bool:
+    return ctx.name == "apparmor_parser" and any(a in ("-R", "--remove") or re.fullmatch(r"-\w*R\w*", a) for a in ctx.view.args)
 
 
 def pacman_config_write(ctx: Ctx) -> bool:
@@ -340,6 +372,10 @@ CMD_RULES: tuple[CmdRule, ...] = (
     CmdRule("exec-from-tmp", "caution", "Makes executable or runs files from a world-writable directory", exec_from_temp),
     CmdRule("kernel-module", "caution", "Loads or unloads kernel modules", _named("insmod", "rmmod", "modprobe")),
     CmdRule("setcap", "caution", "Grants file capabilities", _named("setcap")),
+    CmdRule("apparmor-unload", "caution", "Unloads an AppArmor profile", apparmor_unload),
+    CmdRule("home-delete", "caution", "Deletes files in the user's home", home_delete),
+    CmdRule("install-hook-persistence", "caution", "Install hook sets up persistence (cron, services, shell rc)",
+            hook_persistence, "install"),
     CmdRule("pacman-key", "caution", "Changes the pacman trust keyring", _named("pacman-key")),
     CmdRule("chattr-immutable", "caution", "Makes files immutable (hard to remove)", immutable_attr),
     CmdRule("user-management", "caution", "Creates or modifies system users",

@@ -41,13 +41,16 @@ def run_bash(text: str, timeout: float = 15.0) -> tuple[int, str, str]:
 
 
 QUOTES = re.compile(r"['\"\\]")
+# bash prints `$'a\nb'` and `"\x7fELF"` with the escape already turned into a character, the scanner keeps the
+# escape as written; both become a space here so that neither leaves a stray `n` or `x7fELF` behind
+ESCAPES = re.compile(r"\\(?:x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|[abefnrtv])")
 
 
 def words(text: str) -> Counter:
     """Words of a script, insensitive to what bash rewrites when it prints a script back: quoting,
     layout, and the fd numbers it adds to redirections (`>&1` becomes `1>&1`). Words that are only
     digits are ignored for that reason; a number cannot hide a command."""
-    return Counter(w for w in WORD.findall(QUOTES.sub("", text)) if w not in STRUCTURAL and not w.isdigit())
+    return Counter(w for w in WORD.findall(QUOTES.sub("", ESCAPES.sub(" ", text))) if w not in STRUCTURAL and not w.isdigit())
 
 
 def our_words(pre: Preprocessed) -> Counter:

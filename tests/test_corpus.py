@@ -245,15 +245,15 @@ def test_cli_export_and_collect_with_names(tmp_path, monkeypatch, capsys):
 def test_measure_counts_what_the_noisy_rules_are_about(tmp_path):
     corpus_file = tmp_path / "pkgbuilds.jsonl"
     bodies = [
-        "build() {\n  arch-meson . build\n  arch-meson b\n  frobnicate x\n}\n",
-        "build() {\n  arch-meson . build\n}\n",
+        "build() {\n  gen-tool . build\n  gen-tool b\n  frobnicate x\n}\n",
+        "build() {\n  gen-tool . build\n}\n",
     ]
     corpus_file.write_text("".join(json.dumps({"name": f"p{i}", "files": {"PKGBUILD": b, "tool.py": "print(1)\n"}}) + "\n"
                                    for i, b in enumerate(bodies)))
     report = corpus.measure(corpus_file)
-    assert report["details"]["unknown-command"] == {"arch-meson": 2, "frobnicate": 1}
+    assert report["details"]["unknown-command"] == {"gen-tool": 2, "frobnicate": 1}
     assert report["details"]["unanalyzed-file"] == {".py": 2}
-    assert "arch-meson" in corpus.format_report(report)
+    assert "gen-tool" in corpus.format_report(report)
 
 
 def test_iter_records_accepts_a_string_path(tmp_path):
