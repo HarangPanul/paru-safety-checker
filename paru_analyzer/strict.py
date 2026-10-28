@@ -164,6 +164,20 @@ PREDICATE_FINDINGS = {
 }
 
 
+# Programs at these directories are the system's own; a command at any other absolute path is that file, whatever
+# its name, and is not the standard command of the same name.
+SYSTEM_BIN = frozenset({"/usr/bin", "/usr/sbin", "/bin", "/sbin"})
+# makepkg defines these; a PKGBUILD that redefines one is not shadowing a standard command.
+MAKEPKG_FUNCTIONS = frozenset("msg msg2 warning error plain plainerr".split())
+# bash calls these whenever a command is not found
+COMMAND_LOOKUP_HANDLERS = frozenset({"command_not_found_handle", "command_not_found_handler"})
+# a system effect of this kind in the table (`hash -p`, `shopt -s expand_aliases`) is reported with this rule
+SYSTEM_EFFECT_FINDINGS = {
+    "command-lookup": ("command-lookup-change", "{name} changes which program a command name runs"),
+    "shell-options": ("alias-definition", "{name} turns on alias expansion, so aliases rewrite the commands that follow"),
+}
+
+
 def _table_key(table: commandtable.Table, name: str) -> str:
     """The table's name for a command: `python3.11` is the `python` entry."""
     if table.lookup(name) is None and INTERPRETERS.match(name):
@@ -181,12 +195,25 @@ def classify(command: Command, where: str, local_functions: set[str]) -> tuple[s
         if SEARCH_TOOLCHAIN_VARS.fullmatch(raw):
             return None
         return "dynamic-command", f"Command is built at run time ({raw}), so what runs cannot be reviewed"
-    name = _normalise(raw)
-    if name in local_functions:
-        return None
     table = commandtable.load()
+    name = raw
+    if raw.startswith("/") and table.lookup(raw) is None:
+        directory, _, name = raw.rpartition("/")
+        if directory not in SYSTEM_BIN:
+            return "unknown-command", f"Command is run from a path outside the system program directories ({raw})"
+    elif not raw.startswith("/"):
+        name = _normalise(raw)
     key = _table_key(table, name)
+    if name in local_functions:
+        # a function of this file. If it also has the name of a command this one is checked as the command too,
+        # since which of the two runs depends on the order of definitions, which is not followed.
+        entry = table.lookup(key)
+        if entry is None or where not in (entry.where or ("build",)):
+            return None
     for rule, _, _ in table.fired(key, command.args, command.piped):
+        if rule.kind == "system" and rule.target.word in SYSTEM_EFFECT_FINDINGS:
+            found, message = SYSTEM_EFFECT_FINDINGS[rule.target.word]
+            return found, message.format(name=name)
         for condition in rule.conditions:
             if condition.kind == "predicate" and not condition.negated and condition.names[0] in PREDICATE_FINDINGS:
                 found, message = PREDICATE_FINDINGS[condition.names[0]]
@@ -220,6 +247,15 @@ def scan_strict(name: str, source) -> list[Finding]:
             seen.add((rule, key))
             findings.append(Finding("info", message, name, line, rule))
 
+    table = commandtable.load()
+    for function, line in parsed.function_definitions.items():
+        if function in COMMAND_LOOKUP_HANDLERS:
+            add("command-lookup-change", f"Function {function} runs whenever a command is not found", line, function)
+        elif function not in MAKEPKG_FUNCTIONS and table.lookup(function) is not None:
+            add("shadowed-command", f"Function {function} has the name of a standard command, so a call to it may run "
+                                    f"the function instead of the command", line, function)
+    aliases = _aliases(parsed, add)
+
     for step in parsed.steps:
         shown = step.text[:100]
         if step.toplevel_code:
@@ -231,10 +267,48 @@ def scan_strict(name: str, source) -> list[Finding]:
         if not step.ok:
             add("unparseable-shell", f"Shell that could not be parsed, so it was not reviewed: {shown}", step.line, str(step.line))
         for command in step.commands:
-            verdict = classify(command, where, local_functions)
-            if verdict:
-                rule, message = verdict
-                add(rule, f"{message}: {shown}", step.line, command.name if rule == "unknown-command" else str(step.line))
-            elif step.heredoc and INTERPRETERS.match(_normalise(command.name)):
-                add("inline-code", f"{command.name} receives its program from a here-document: {shown}", step.line, str(step.line))
+            called = _normalise(command.name)
+            if called == "alias":
+                continue                                    # reported as alias-definition
+            checked = [(command, "")]
+            if called in aliases:                           # the alias is the definition; what it stands for is what runs
+                checked = [(inner, f" (through the alias {called})") for inner in _alias_commands(aliases[called], command)]
+            for each, how in checked:
+                verdict = classify(each, where, local_functions)
+                if verdict:
+                    rule, message = verdict
+                    add(rule, f"{message}{how}: {shown}", step.line, each.name if rule == "unknown-command" else str(step.line))
+                elif step.heredoc and INTERPRETERS.match(_normalise(each.name)):
+                    add("inline-code", f"{each.name} receives its program from a here-document: {shown}", step.line, str(step.line))
     return findings
+
+
+def _aliases(parsed, add) -> dict:
+    """name -> value of every alias the file defines (in any order, in any branch). Defining one is a finding:
+    an alias can change what a later command runs."""
+    found: dict = {}
+    for pc in parsed.commands:
+        if _normalise(pc.command.name) != "alias":
+            continue
+        operands = [arg for arg in pc.command.args if not arg.startswith("-")]
+        if not operands:                                    # `alias` and `alias -p` only list
+            continue
+        defined = [arg for arg in operands if "=" in arg]
+        for arg in defined:
+            name, _, value = arg.partition("=")
+            found[name] = value
+        label = ", ".join(a.partition("=")[0] for a in defined) or "(none readable)"
+        add("alias-definition", f"The script defines an alias ({label}), which can change what a command runs", pc.line, str(pc.line))
+    return found
+
+
+def _alias_commands(value: str, call: Command) -> list:
+    """The commands an alias stands for, with the call's own arguments added to the last one."""
+    from . import astadapt                                  # astadapt imports this module
+    commands, ok = astadapt.flatten(value)
+    if not ok:
+        commands = astadapt.loose(value) or commands
+    commands = list(commands)
+    if commands and call.args:
+        commands[-1] = commands[-1]._replace(args=list(commands[-1].args) + list(call.args))
+    return commands or [Command("__SUB__", [], False)]

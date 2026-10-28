@@ -296,11 +296,21 @@ class ParsedFile:
         return tuple(astadapt.steps(list(self._units[0])))
 
     @cached_property
+    def function_definitions(self) -> dict:
+        """Functions the file defines, name -> line of the first definition (anywhere: inside another function
+        or a branch counts too, since which definition is in force when a call runs is not followed)."""
+        if self.pre is None or not self.pre.ok:
+            return {}
+        found: dict = {}
+        for node in shast.walk(self.ast.script):
+            if isinstance(node, shast.FunctionDef):
+                found.setdefault(node.name, node.line)
+        return found
+
+    @cached_property
     def function_names(self) -> frozenset:
         """Functions the file defines: calling one is not running an unknown program."""
-        if self.pre is None or not self.pre.ok:
-            return frozenset()
-        return frozenset(n.name for n in shast.walk(self.ast.script) if isinstance(n, shast.FunctionDef))
+        return frozenset(self.function_definitions)
 
     @cached_property
     def toplevel_commands(self) -> tuple:
