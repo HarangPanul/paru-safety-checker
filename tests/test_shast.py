@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from paru_safety_checker import shast
-from paru_safety_checker.shast import (
+from paru_analyzer import shast
+from paru_analyzer.shast import (
     AndOr, ArithCommand, Assign, Case, CmdSub, Conditional, For, FunctionDef, Group, HereDoc, If, Lit, Param,
     Pipeline, ProcSub, Redirect, Simple, Statement, Subshell, Unparsed, While, Word, decode_ansi_c, dump, parse,
     simple_commands, walk,

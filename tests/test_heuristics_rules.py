@@ -1,7 +1,7 @@
 """One positive case per rule, plus a corpus of ordinary packaging lines that must stay clean."""
 import pytest
 
-from paru_safety_checker.heuristics import RULES, level_of, scan
+from paru_analyzer.heuristics import RULES, level_of, scan
 
 
 def in_function(line, name="PKGBUILD"):
@@ -315,7 +315,7 @@ def test_danger_drops_lower_severities_on_the_same_line():
 
 
 def test_collect_files_reports_symlinks(tmp_path):
-    from paru_safety_checker.fetch import collect_files
+    from paru_analyzer.fetch import collect_files
     (tmp_path / "PKGBUILD").write_text("pkgname=x\n")
     (tmp_path / "evil.install").symlink_to("/etc/passwd")
     files = collect_files(tmp_path)
@@ -397,21 +397,21 @@ def test_appended_checksums_stay_aligned_with_appended_sources():
 
 
 def test_truncated_and_submodule_files_are_flagged():
-    from paru_safety_checker.fetch import TRUNCATED_MARKER
+    from paru_analyzer.fetch import TRUNCATED_MARKER
     assert found({"PKGBUILD": "x\n" + TRUNCATED_MARKER}, "truncated-file")
     assert found({".gitmodules": "[submodule \"a\"]\n"}, "git-submodules")
     assert found({"sub/.gitmodules": "x"}, "git-submodules")
 
 
 def test_collect_files_marks_oversized_files_as_truncated(tmp_path):
-    from paru_safety_checker import fetch
+    from paru_analyzer import fetch
     (tmp_path / "PKGBUILD").write_text("pkgname=x\n")
     (tmp_path / "big.sh").write_text("a" * (fetch.MAX_FILE_BYTES + 5))
     assert found(fetch.collect_files(tmp_path), "truncated-file")
 
 
 def test_dependencies_extraction():
-    from paru_safety_checker.heuristics import dependencies
+    from paru_analyzer.heuristics import dependencies
     text = (
         "_p=foo\ndepends=('glibc>=2.3' \"$_p-lib\" 'bar: for baz')\n"
         "makedepends=(cmake\n  ninja)\ncheckdepends+=('gtest')\noptdepends=('opt: nice')\n"

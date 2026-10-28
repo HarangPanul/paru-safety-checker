@@ -83,7 +83,7 @@ def main(
         try:
             files = fetcher(package)
         except FetchError as exc:
-            _err(f"[paru-safe] cannot fetch {package}: {exc}")
+            _err(f"[paru-analyzer] cannot fetch {package}: {exc}")
             unchecked.append(package)
             continue
         if files is None:
@@ -104,7 +104,7 @@ def main(
             level_now = worst(worst(verdict.level, ai.level), level_of(ai.findings))
             verdict = Verdict(level_now, ai.summary, static + ai.findings)
         except ProviderError as exc:
-            _err(f"[paru-safe] AI analysis failed for {package}: {exc}")
+            _err(f"[paru-analyzer] AI analysis failed for {package}: {exc}")
             unchecked.append(package)
         _err(format_verdict(package, verdict))
         level = worst(level, verdict.level)
@@ -112,10 +112,10 @@ def main(
     # Nothing is ever refused: the user sees the report and chooses, even when nothing was marked (silence is
     # not a verdict). Riskier states need a typed "yes".
     if unchecked:
-        _err(f"[paru-safe] NOT fully reviewed: {', '.join(unchecked)}")
+        _err(f"[paru-analyzer] NOT fully reviewed: {', '.join(unchecked)}")
     if unchecked or level == "danger":
         if level == "danger":
-            _err("[paru-safe] DANGER: at least one package was flagged as dangerous.")
+            _err("[paru-analyzer] DANGER: at least one package was flagged as dangerous.")
         if not _confirm(ask, "Install anyway? Type 'yes' to continue: ", exact="yes"):
             return 1
     elif level == "caution":
@@ -145,7 +145,7 @@ def _dependency_findings(package: str, files: dict[str, str], targets: list[str]
     """paru builds AUR dependencies too, and nothing here reviews them unless they are named."""
     return [
         Finding("caution", f"Dependency {dep} is not in the official repositories; paru will fetch and build it "
-                           f"from the AUR without paru-safe reviewing it (name it on the command line to review it)",
+                           f"from the AUR without paru-analyzer reviewing it (name it on the command line to review it)",
                 "PKGBUILD", None, "unreviewed-dependency")
         for dep in dependencies(files)
         if dep != package and dep not in targets and not dep_ok(dep)

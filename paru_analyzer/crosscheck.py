@@ -31,7 +31,7 @@ Runner = Callable[[str], tuple[int, str, str]]
 
 def run_bash(text: str, timeout: float = 15.0) -> tuple[int, str, str]:
     """(exit code, stdout, stderr) of `bash --pretty-print`. Never runs the script: it only parses it."""
-    with tempfile.TemporaryDirectory(prefix="paru-safe-bash-") as cwd:
+    with tempfile.TemporaryDirectory(prefix="paru-analyzer-bash-") as cwd:
         done = subprocess.run(
             ["bash", "--noprofile", "--norc", "--pretty-print"],
             input=text.encode("utf-8", "surrogateescape"), capture_output=True, timeout=timeout, cwd=cwd,

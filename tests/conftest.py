@@ -1,6 +1,6 @@
 import pytest
 
-from paru_safety_checker import crosscheck
+from paru_analyzer import crosscheck
 
 
 @pytest.fixture(autouse=True)

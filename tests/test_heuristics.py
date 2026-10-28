@@ -1,6 +1,6 @@
 import pytest
 
-from paru_safety_checker.heuristics import level_of, scan
+from paru_analyzer.heuristics import level_of, scan
 
 
 def rules(files, package=None):

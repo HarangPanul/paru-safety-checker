@@ -5,7 +5,7 @@ The lines are written the way attackers and packagers actually write them: wrapp
 groups, variables, redirects. A line that is expected to fire names the rule; "!" means quiet."""
 import pytest
 
-from paru_safety_checker.heuristics import scan
+from paru_analyzer.heuristics import scan
 
 # (line, expected rule id | "!")
 CASES = [

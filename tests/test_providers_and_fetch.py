@@ -4,12 +4,12 @@ import urllib.error
 
 import pytest
 
-from paru_safety_checker import fetch
-from paru_safety_checker.models import Verdict
-from paru_safety_checker.prompt import build_user_prompt
-from paru_safety_checker.providers import ProviderError
-from paru_safety_checker.providers import claude as claude_mod
-from paru_safety_checker.providers.claude import ClaudeProvider
+from paru_analyzer import fetch
+from paru_analyzer.models import Verdict
+from paru_analyzer.prompt import build_user_prompt
+from paru_analyzer.providers import ProviderError
+from paru_analyzer.providers import claude as claude_mod
+from paru_analyzer.providers.claude import ClaudeProvider
 
 
 class FakeResponse(io.BytesIO):
@@ -105,7 +105,7 @@ def test_valid_package_name(name, ok):
 
 
 def test_prompt_includes_prescan_findings():
-    from paru_safety_checker.models import Finding
+    from paru_analyzer.models import Finding
     prompt = build_user_prompt("foo", {"PKGBUILD": "x"}, [Finding("caution", "uses sudo", "PKGBUILD", 3, "sudo")],
                                inventory="[network] PKGBUILD:2 downloads source https://x")
     assert "Scanner findings already reported" in prompt and "[caution] sudo PKGBUILD:3" in prompt
@@ -113,5 +113,5 @@ def test_prompt_includes_prescan_findings():
 
 
 def test_system_prompt_gives_the_ai_the_novel_techniques_job():
-    from paru_safety_checker.prompt import SYSTEM_PROMPT
+    from paru_analyzer.prompt import SYSTEM_PROMPT
     assert "NEW techniques" in SYSTEM_PROMPT and "cannot lower" in SYSTEM_PROMPT

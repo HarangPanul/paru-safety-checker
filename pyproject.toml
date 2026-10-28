@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "paru-safety-checker"
+name = "paru-analyzer"
 version = "0.1.0"
 description = "Help you understand what an AUR PKGBUILD is made of and does before installing it with paru"
 readme = "README.md"
@@ -16,11 +16,11 @@ dependencies = []
 dev = ["pytest"]
 
 [project.scripts]
-paru-safe = "paru_safety_checker.cli:main"
+paru-analyzer = "paru_analyzer.cli:main"
 
 [tool.setuptools]
 license-files = ["LICENSE", "NOTICE"]
-packages = ["paru_safety_checker", "paru_safety_checker.providers"]
+packages = ["paru_analyzer", "paru_analyzer.providers"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

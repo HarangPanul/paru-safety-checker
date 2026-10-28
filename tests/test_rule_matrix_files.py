@@ -5,7 +5,7 @@ the routine ones fires. A heredoc body is text being written to a file: only the
 file (`curl x | sh`, `rm -rf /`) read it, not the ones about commands (`sudo`, writes outside $pkgdir)."""
 import pytest
 
-from paru_safety_checker.heuristics import scan
+from paru_analyzer.heuristics import scan
 
 B = lambda body: ("PKGBUILD", "build() {\n" + body + "\n}\n")
 I = lambda body: ("foo.install", "post_install() {\n" + body + "\n}\n")

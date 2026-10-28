@@ -1,9 +1,9 @@
 """The commands the checkers read, now taken from the syntax tree."""
 import pytest
 
-from paru_safety_checker import astadapt, parsed, shast
-from paru_safety_checker.heuristics import scan
-from paru_safety_checker.parsed import ParsedFile
+from paru_analyzer import astadapt, parsed, shast
+from paru_analyzer.heuristics import scan
+from paru_analyzer.parsed import ParsedFile
 
 
 def units_of(text):

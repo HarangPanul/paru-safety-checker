@@ -1,8 +1,8 @@
 """Build a corpus of presumed-benign AUR packages and measure scanner false positives.
 
-    python -m paru_safety_checker.corpus collect --out data/corpus --count 500
-    python -m paru_safety_checker.corpus measure --corpus data/corpus
-    python -m paru_safety_checker.corpus export --corpus data/corpus --out data/targets --label benign
+    python -m paru_analyzer.corpus collect --out data/corpus --count 500
+    python -m paru_analyzer.corpus measure --corpus data/corpus
+    python -m paru_analyzer.corpus export --corpus data/corpus --out data/targets --label benign
 
 Other ways to pick targets: --strategy recent|newest, --max-votes 5, --since-days 30, --only orphan,
 --names list.txt (one package per line).
@@ -34,7 +34,7 @@ from .heuristics import level_of, scan
 META_URL = "https://aur.archlinux.org/packages-meta-ext-v1.json.gz"
 META_NAME = "packages-meta-ext-v1.json.gz"
 CORPUS_NAME = "pkgbuilds.jsonl"
-USER_AGENT = "paru-safety-checker-corpus/0.1"
+USER_AGENT = "paru-analyzer-corpus/0.1"
 # HTTP 429/403 or wording that means "slow down"; anything else is an ordinary failure.
 RATE_LIMIT_RE = re.compile(r"\b(?:429|403)\b|rate limit|too many", re.IGNORECASE)
 
@@ -298,7 +298,7 @@ def format_report(report: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m paru_safety_checker.corpus")
+    parser = argparse.ArgumentParser(prog="python -m paru_analyzer.corpus")
     sub = parser.add_subparsers(dest="command", required=True)
 
     c = sub.add_parser("collect", help="download PKGBUILDs of popular AUR packages")

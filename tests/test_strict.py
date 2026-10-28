@@ -1,8 +1,8 @@
 """The default-deny layer: anything not recognised as an ordinary packaging step is reported."""
 import pytest
 
-from paru_safety_checker.heuristics import level_of, scan
-from paru_safety_checker.strict import extract_commands, scan_strict
+from paru_analyzer.heuristics import level_of, scan
+from paru_analyzer.strict import extract_commands, scan_strict
 
 
 def names(text):
@@ -241,7 +241,7 @@ def test_hostile_nesting_is_reported_not_a_crash():
 
 
 def test_an_analyzer_failure_keeps_earlier_findings_and_adds_a_warning(monkeypatch):
-    from paru_safety_checker import heuristics
+    from paru_analyzer import heuristics
 
     def boom(name, text):
         raise RuntimeError("bug")

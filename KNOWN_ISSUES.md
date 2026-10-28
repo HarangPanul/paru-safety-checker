@@ -16,7 +16,7 @@ install hooks, code that runs on parse, commands). Still missing:
 
 ### Judging what the downloaded sources do
 
-**Decision:** this is left to the user. `paru-safe` reports *what is downloaded* (URL, checksum,
+**Decision:** this is left to the user. `paru-analyzer` reports *what is downloaded* (URL, checksum,
 whether a VCS source is pinned) and warns about it, and the user decides whether to trust it.
 The contents of remote sources are never fetched or inspected: a `./configure`, `Makefile`,
 `setup.py` or `postinstall` script inside a tarball can do anything, and the PKGBUILD review says
@@ -55,7 +55,7 @@ padded that wide reaches the user as the `unparseable-shell` and `overlong-line`
 
 ## 3. The reviewed PKGBUILD and the built PKGBUILD can differ (TOCTOU)
 
-`paru-safe` clones the AUR repo, reviews it, and then runs `paru`, which clones it again. If
+`paru-analyzer` clones the AUR repo, reviews it, and then runs `paru`, which clones it again. If
 the package changes in between, what was reviewed is not what is built. Closing this means
 building from the reviewed checkout (for example `makepkg` in that directory, then installing
 the result) instead of handing the package name back to paru.
@@ -70,7 +70,7 @@ They are not fetched or scanned unless the user names them on the command line.
 The scanner is deliberately strict (a miss is worse than a false alarm), so nearly every
 package asks for confirmation. How often each rule fires on real packages has not been
 measured, because `aur.archlinux.org` is not reachable from the development sandbox. Run
-`python -m paru_safety_checker.corpus collect` and `measure` on a normal machine and use the
+`python -m paru_analyzer.corpus collect` and `measure` on a normal machine and use the
 per-rule counts to decide which rules are worth their noise.
 
 ## 6. Detection can never be complete

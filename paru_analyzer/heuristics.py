@@ -620,7 +620,7 @@ def _scan_pkgbuild(parsed: ParsedFile) -> list[Finding]:
                 if parts.path.startswith(("/etc", "/root", "/home")):
                     findings.append(Finding("caution", f"Source reads a local file: {url}", name, line, "file-source"))
                 continue
-            findings.append(Finding("caution", f"External source, not reviewed by paru-safe: {url}", name, line, "external-source"))
+            findings.append(Finding("caution", f"External source, not reviewed by paru-analyzer: {url}", name, line, "external-source"))
             if is_vcs and not re.search(r"#(?:commit|tag)=", url):
                 findings.append(Finding("caution", f"VCS source is not pinned to a commit or tag, so what is built can differ from what was reviewed: {url}", name, line, "unpinned-vcs"))
             if not is_vcs:

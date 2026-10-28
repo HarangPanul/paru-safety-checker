@@ -5,8 +5,8 @@ import subprocess
 
 import pytest
 
-from paru_safety_checker import corpus, fetch
-from paru_safety_checker.fetch import FetchError
+from paru_analyzer import corpus, fetch
+from paru_analyzer.fetch import FetchError
 
 
 def entry(name, pop=1.0, votes=20, maintainer="m", out_of_date=None, base=None):

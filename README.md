@@ -1,4 +1,4 @@
-# paru-safety-checker
+# paru-analyzer
 arch linux에서 paru로 aur패키지를 설치하기 전, **PKGBUILD가 무엇으로 이루어져 있고 무엇을 하는지 사용자가 더 빠르게 이해하도록 돕는 도구**
 
 ## 목표와 원칙
@@ -31,10 +31,10 @@ arch linux에서 paru로 aur패키지를 설치하기 전, **PKGBUILD가 무엇�
 ```sh
 pip install .
 export ANTHROPIC_API_KEY=...
-paru-safe -S some-aur-package
+paru-analyzer -S some-aur-package
 ```
 
-`paru-safe`는 `-S` 설치 명령일 때만 AUR 저장소를 받아 아래를 순서대로 보여준 뒤 확인을 받고 `paru`를 실행합니다.
+`paru-analyzer`는 `-S` 설치 명령일 때만 AUR 저장소를 받아 아래를 순서대로 보여준 뒤 확인을 받고 `paru`를 실행합니다.
 그 외 명령은 그대로 paru에 전달됩니다.
 
 1. **행위 보고서**: 네트워크 접근, 빌드 디렉터리 밖 파일 접근(읽기/쓰기/삭제), 설치 훅, 파싱 시점 코드, 실행 명령.
@@ -67,7 +67,7 @@ paru-safe -S some-aur-package
 
 ## 규칙 기반 사전 검사
 
-`paru_safety_checker/heuristics.py`의 규칙(약 100개)이 PKGBUILD / `*.install` / 패치를 검사합니다.
+`paru_analyzer/heuristics.py`의 규칙(약 100개)이 PKGBUILD / `*.install` / 패치를 검사합니다.
 심각도는 두 단계입니다.
 
 - `danger`: 강하게 표시(`yes` 입력 필요). AI가 문제없다고 해도 뒤집지 못합니다.
@@ -125,7 +125,7 @@ paru-safe -S some-aur-package
 
 ### 허용 목록 방식(default-deny)
 
-정규식은 "알려진 나쁜 패턴"만 찾으므로 새 수법은 통과합니다. 그래서 `paru_safety_checker/strict.py`가 PKGBUILD와
+정규식은 "알려진 나쁜 패턴"만 찾으므로 새 수법은 통과합니다. 그래서 `paru_analyzer/strict.py`가 PKGBUILD와
 `*.install`의 쉘 코드를 직접 해석해서, **일반적인 패키징 명령이 아니면 전부 경고**합니다.
 
 - 실행되는 모든 명령(`$(...)`, 백틱, 파이프, `find -exec`, `xargs`, 래퍼 명령 안쪽 포함)이 허용 목록에 있어야 합니다.
@@ -145,7 +145,7 @@ paru-safe -S some-aur-package
 - `source`의 모든 원격 URL(https·체크섬 유무와 무관), 고정되지 않은 VCS 소스, 변수라서 해석할 수 없는 소스
 - 빌드 중 의존성을 내려받는 도구: go / cargo / npm·pnpm·yarn / pip·`python -m build`(격리 빌드) / gem / maven·gradle / dotnet 등
 - 빌드 중 `git clone`·`git fetch`, `curl`/`wget`, 설치 도구(`pacman -S`, `docker pull` 등)
-- 공식 저장소에 없는 의존성: paru가 AUR에서 받아 빌드하지만 `paru-safe`가 검토하지 않으므로, 명령줄에 직접 적어야 검토됩니다.
+- 공식 저장소에 없는 의존성: paru가 AUR에서 받아 빌드하지만 `paru-analyzer`가 검토하지 않으므로, 명령줄에 직접 적어야 검토됩니다.
 
 ## 규칙 기반 검사의 오탐 측정
 
@@ -153,23 +153,23 @@ paru-safe -S some-aur-package
 
 ```sh
 # 1) 수집: 메타데이터 덤프 1회 + 패키지별 순차 clone (기본 2~3초 간격, 중단 후 재실행하면 이어서 진행)
-python -m paru_safety_checker.corpus collect --out data/corpus --count 500
+python -m paru_analyzer.corpus collect --out data/corpus --count 500
 
 # 2) 측정: 레벨별 비율, 규칙별 오탐 패키지 수와 예시
-python -m paru_safety_checker.corpus measure --corpus data/corpus --examples 3
+python -m paru_analyzer.corpus measure --corpus data/corpus --examples 3
 ```
 
 대상을 다르게 고르거나 폴더로 내보낼 수도 있습니다.
 
 ```sh
 # 최근 30일 안에 바뀐 패키지 중 투표가 5표 이하인 것 (새 악성 패키지가 몰리는 구간)
-python -m paru_safety_checker.corpus collect --out data/corpus --count 300 --strategy recent --since-days 30 --max-votes 5 --min-votes 0
+python -m paru_analyzer.corpus collect --out data/corpus --count 300 --strategy recent --since-days 30 --max-votes 5 --min-votes 0
 # 고아(orphan) 패키지나 out-of-date 패키지만
-python -m paru_safety_checker.corpus collect --out data/corpus --only orphan --min-votes 0
+python -m paru_analyzer.corpus collect --out data/corpus --only orphan --min-votes 0
 # 직접 모은 목록(한 줄에 패키지 하나, # 주석 가능)
-python -m paru_safety_checker.corpus collect --out data/corpus --names targets.txt
+python -m paru_analyzer.corpus collect --out data/corpus --names targets.txt
 # 패키지별 폴더로 내보내기: data/targets/<label>/<패키지>/PKGBUILD (label을 malicious/benign으로 두면 experiments/yesno_logprob.py가 그대로 읽음)
-python -m paru_safety_checker.corpus export --corpus data/corpus --out data/targets --label benign
+python -m paru_analyzer.corpus export --corpus data/corpus --out data/targets --label benign
 ```
 
 AUR이 429/403을 돌려주면 지수 백오프로 재시도하고, 계속되면 중단합니다. `data/`는 git에서 제외됩니다.

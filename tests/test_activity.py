@@ -1,11 +1,11 @@
 """The inventory reports what a package does, whether or not it looks suspicious."""
 import pytest
 
-from paru_safety_checker.activity import (
+from paru_analyzer.activity import (
     Activity, build_activity, classify_path, file_accesses, format_activity, inventory_for_ai,
 )
-from paru_safety_checker.heuristics import source_entries
-from paru_safety_checker.strict import extract_commands
+from paru_analyzer.heuristics import source_entries
+from paru_analyzer.strict import extract_commands
 
 
 def accesses(line):

@@ -4,9 +4,9 @@ import shutil
 
 import pytest
 
-from paru_safety_checker import crosscheck
-from paru_safety_checker.heuristics import scan
-from paru_safety_checker.preprocess import preprocess, render
+from paru_analyzer import crosscheck
+from paru_analyzer.heuristics import scan
+from paru_analyzer.preprocess import preprocess, render
 
 needs_bash = pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required for the cross-check")
 

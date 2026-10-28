@@ -79,7 +79,7 @@ def clone_package(package: str, dest: Path) -> None:
 
 def fetch_package_files(package: str) -> dict[str, str] | None:
     """Clone the AUR repo of `package`; return its files, or None if it has no PKGBUILD."""
-    with tempfile.TemporaryDirectory(prefix="paru-safe-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="paru-analyzer-") as tmp:
         dest = Path(tmp) / "pkg"
         clone_package(package, dest)
         if not (dest / "PKGBUILD").is_file():
