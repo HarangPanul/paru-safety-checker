@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 LEVELS = ("clear", "info", "warning")
-# A fact is not a level. It states how the package is built ("the source comes from github.com and was not
+# "expected" is not a level. It states how the package is built ("the source comes from github.com and was not
 # reviewed") without saying the package is risky, so it is shown but never raises the level, and the AI cannot
-# report one (the schema below only offers LEVELS).
-FACT = "fact"
+# report one (the schema below only offers LEVELS). Everything else is a "concern" and raises the level.
+EXPECTED = "expected"
 
 VERDICT_SCHEMA = {
     "type": "object",

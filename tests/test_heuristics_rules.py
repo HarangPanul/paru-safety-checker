@@ -302,12 +302,12 @@ def test_omitted_files_binary_symlink_and_limit():
     omitted = "TRUNCATED: not reviewed:\n{}"
     def run(lines):
         return {f.rule: f.severity for f in scan({"(omitted-files)": omitted.format("\n".join(lines))})}
-    assert run(["icon.png (binary or unreadable)", "k.gpg (binary or unreadable)"]) == {"binary-in-repo": "fact"}
-    assert run(["helper (binary or unreadable)"]) == {"binary-in-repo": "fact"}
-    assert run(["a.patch (binary or unreadable)"]) == {"binary-in-repo": "fact"}
+    assert run(["icon.png (binary or unreadable)", "k.gpg (binary or unreadable)"]) == {"binary-in-repo": "expected"}
+    assert run(["helper (binary or unreadable)"]) == {"binary-in-repo": "expected"}
+    assert run(["a.patch (binary or unreadable)"]) == {"binary-in-repo": "expected"}
     assert run(["PKGBUILD (symlink)"]) == {"symlink": "warning"}
     assert run(["foo.install (symlink)"]) == {"symlink": "warning"}
-    assert run(["notes (symlink)"]) == {"symlink": "fact"}
+    assert run(["notes (symlink)"]) == {"symlink": "expected"}
     assert run(["big (total size limit)"]) == {"incomplete": "info"}
 
 
@@ -364,8 +364,8 @@ REMOTE = "pkgname=x\nsource=('https://example.com/x.tgz')\nsha256sums=('a')\n"
 
 def test_every_remote_source_is_flagged_even_over_https_with_a_checksum():
     findings = scan({"PKGBUILD": REMOTE})
-    assert [(f.rule, f.severity) for f in findings] == [("external-source", "fact")]
-    assert level_of(findings) == "clear"  # a fact is shown but does not raise the level
+    assert [(f.rule, f.severity) for f in findings] == [("external-source", "expected")]
+    assert level_of(findings) == "clear"  # an expected item is shown but does not raise the level
 
 
 def test_vcs_sources_are_external_and_must_be_pinned():
@@ -423,13 +423,13 @@ def test_dependencies_extraction():
     assert dependencies({}) == []
 
 
-def test_facts_never_raise_the_level_but_marks_still_do():
+def test_expected_items_never_raise_the_level_but_marks_still_do():
     sources = "pkgname=x\nsource=('https://example.com/x.AppImage' 'git+https://github.com/a/b.git')\nsha256sums=('a' 'SKIP')\n"
-    facts = scan({"PKGBUILD": sources, "(omitted-files)": "TRUNCATED: not reviewed:\nicon.png (binary or unreadable)\nnotes (symlink)"})
-    kinds = {f.rule: f.severity for f in facts}
-    assert {k: v for k, v in kinds.items() if v == "fact"} == {
-        "external-source": "fact", "prebuilt-source": "fact", "unpinned-vcs": "fact", "binary-in-repo": "fact", "symlink": "fact"}
-    assert level_of([f for f in facts if f.rule in kinds and kinds[f.rule] == "fact"]) == "clear"
+    shown = scan({"PKGBUILD": sources, "(omitted-files)": "TRUNCATED: not reviewed:\nicon.png (binary or unreadable)\nnotes (symlink)"})
+    kinds = {f.rule: f.severity for f in shown}
+    assert {k: v for k, v in kinds.items() if v == "expected"} == {
+        "external-source": "expected", "prebuilt-source": "expected", "unpinned-vcs": "expected", "binary-in-repo": "expected", "symlink": "expected"}
+    assert level_of([f for f in shown if f.rule in kinds and kinds[f.rule] == "expected"]) == "clear"
     marked = scan({"PKGBUILD": sources + "build() {\n  sudo make\n}\n"})
     assert level_of(marked) == "info"
 

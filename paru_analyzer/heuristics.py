@@ -16,7 +16,7 @@ from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from .fetch import TRUNCATED_MARKER
-from .models import FACT, Finding, worst
+from .models import EXPECTED, Finding, worst
 from . import cmdrules, crosscheck
 from .parsed import ParsedFile, expand, parse
 from .strict import scan_strict
@@ -623,13 +623,13 @@ def _scan_pkgbuild(parsed: ParsedFile) -> list[Finding]:
                 if parts.path.startswith(("/etc", "/root", "/home")):
                     findings.append(Finding("info", f"Source reads a local file: {url}", name, line, "file-source"))
                 continue
-            findings.append(Finding(FACT, f"External source, not reviewed by paru-analyzer: {url}", name, line, "external-source"))
+            findings.append(Finding(EXPECTED, f"External source, not reviewed by paru-analyzer: {url}", name, line, "external-source"))
             if is_vcs and not re.search(r"#(?:commit|tag)=", url):
-                findings.append(Finding(FACT, f"VCS source is not pinned to a commit or tag, so what is built can differ from what was reviewed: {url}", name, line, "unpinned-vcs"))
+                findings.append(Finding(EXPECTED, f"VCS source is not pinned to a commit or tag, so what is built can differ from what was reviewed: {url}", name, line, "unpinned-vcs"))
             if not is_vcs:
                 remote_non_vcs.append((item, line))
                 if parts.path.lower().endswith(PREBUILT_EXT):
-                    findings.append(Finding(FACT, f"Source is a prebuilt binary or installer: {url}", name, line, "prebuilt-source"))
+                    findings.append(Finding(EXPECTED, f"Source is a prebuilt binary or installer: {url}", name, line, "prebuilt-source"))
             if target.startswith(("http://", "ftp://", "git://")):
                 findings.append(Finding("info", f"Source over an insecure protocol: {url}", name, line, "insecure-source"))
             if "$" in host:
@@ -682,12 +682,12 @@ def _scan_omitted(text: str) -> list[Finding]:
         name, why = match.group("name"), match.group("why")
         base = name.rsplit("/", 1)[-1]
         if why == "symlink":
-            severity = "warning" if base == "PKGBUILD" or base.endswith(".install") else FACT
+            severity = "warning" if base == "PKGBUILD" or base.endswith(".install") else EXPECTED
             findings.append(Finding(severity, f"Symlink in the package repository (not followed): {name}", name, None, "symlink"))
         elif why == "total size limit":
             findings.append(Finding("info", f"Not reviewed (total size limit): {name}", name, None, "incomplete"))
         else:
-            findings.append(Finding(FACT, f"Binary or unreadable file in the repository, not reviewed: {name}", name, None, "binary-in-repo"))
+            findings.append(Finding(EXPECTED, f"Binary or unreadable file in the repository, not reviewed: {name}", name, None, "binary-in-repo"))
     if not parsed:
         findings.append(Finding("info", "Some files were not reviewed (too large or binary)", "(omitted-files)", None, "incomplete"))
     return findings
@@ -779,6 +779,6 @@ def level_of(findings: list[Finding]) -> str:
     """Verdict level of the findings: the worst severity present."""
     level = "clear"
     for finding in findings:
-        if finding.severity != FACT:
+        if finding.severity != EXPECTED:
             level = worst(level, finding.severity)
     return level

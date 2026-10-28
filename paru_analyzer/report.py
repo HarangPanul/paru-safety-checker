@@ -3,11 +3,11 @@ from __future__ import annotations
 import os
 import sys
 
-from .models import FACT, Verdict
+from .models import EXPECTED, Verdict
 
 # "clear" is the lowest level. It means the scanner marked nothing, not that the package was judged safe.
 # The symbol is always printed so the level never depends on colour alone.
-SYMBOLS = {"fact": "", "clear": "", "info": "! ", "warning": "!! "}
+SYMBOLS = {"expected": "", "clear": "", "info": "! ", "warning": "!! "}
 
 
 def _color_code(level: str) -> str:
@@ -31,8 +31,8 @@ def label(level: str) -> str:
 
 def format_verdict(package: str, verdict: Verdict) -> str:
     lines = [f"{label(verdict.level)} {package}: {verdict.summary}"]
-    # facts come last; they describe the package and never changed the level
-    for finding in sorted(verdict.findings, key=lambda f: f.severity == FACT):
+    # expected items come last; they describe the package and never changed the level
+    for finding in sorted(verdict.findings, key=lambda f: f.severity == EXPECTED):
         where = finding.file + (f":{finding.line}" if finding.line else "")
         tag = f" [{finding.rule}]" if finding.rule else ""
         lines.append(f"  - {label(finding.severity)} {where + ': ' if where else ''}{finding.message}{tag}")

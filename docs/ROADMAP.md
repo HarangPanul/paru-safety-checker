@@ -195,8 +195,8 @@ history is to be checked; a rewrite breaks the link to the previous version but 
   arrays out of those lines with a small fallback.
 - Validate the parser and adapter on the real 500-package corpus (parse failure rate, agreement with `bash -n`,
   old/new route differences).
-- Split facts from marks in the level computation (external-source, prebuilt-source, symlink, binary-in-repo,
-  unanalyzed-file, unpinned-vcs as facts).
+- Done: expected items (external-source, prebuilt-source, symlink, binary-in-repo, unpinned-vcs) are shown but do not
+  raise the level; everything else is a concern. Open: unanalyzed-file is still a concern until .sh scripts are read.
 - IR (`ir.py`) has its data, gaps, effects and coverage test; still to do: render it for the person and for the model
   (gaps first, then marks, effects, sources, units, the original), look up `in_official_repo`, add notes on one step
   becoming several ops and on op dataflow to `docs/IR.md`.
