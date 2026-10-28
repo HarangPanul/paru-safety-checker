@@ -7,7 +7,7 @@
 지금 `strict.py`는 "무해한 명령 이름" 목록(`BUILD_ALLOWED`, `HOOK_ALLOWED`)과, `classify()` 안에 흩어진 인자 검사(`sed`의 `e`/`w`/`r`, `awk`의 `system`, `find -exec`, `tar --to-command` 등)로 모르는 명령을 가려냅니다. 이를 **"명령이 무엇을 하는가"를 적은 표**로 바꿉니다.
 
 - 표는 사실만 적습니다: 이 명령은 (이 인자로) 무엇을 읽고, 쓰고, 실행하고, 내려받고, 올리는가.
-- "그래서 우려인가"는 표가 아니라 **정책**이 정합니다: 효과 × 위치(`area`) × 실행 맥락(빌드 / 설치 훅).
+- "그래서 우려인가"는 표가 아니라 **정책**이 정합니다: 효과 × 위치(`area`) × 실행 맥락(명령이 있는 함수의 역할).
 - 표에 없는 명령은 계속 default-deny(`unknown-command`)입니다.
 
 ## 효과의 종류
@@ -62,20 +62,37 @@ sudo, env, time, xargs   exec=@cmd
 6. **점검 도구**(`python -m paru_analyzer.commands --check`): 중복, `note` 누락, 예시 누락, 알 수 없는 어휘, 정렬을 확인합니다.
 7. 표에 버전을 붙이고 IR에 남깁니다(결과 재현용).
 
-## 정책 (표와 분리)
-표 위에 올라가는 판정 규칙이며, 표를 건드리지 않고 바꿉니다.
+## 실행 맥락: 명령이 어느 함수에 있는가
+같은 효과도 **언제, 누구 권한으로 실행되는가**에 따라 정상이기도 하고 위험하기도 합니다. 예를 들어 `useradd`나 `systemctl enable`(`system` 효과)은 `post_install()`에서는 흔하지만 `build()`나 `package()`에 있으면 빌드가 시스템을 건드리는 것이므로 위험합니다. 인자에 따라 효과 자체가 갈리는 명령도 있습니다(`makepkg -i`는 설치까지 하므로 `system`, `-i`가 없으면 빌드만이라 `system`이 아닙니다. `pacman -S`와 `-Q`도 마찬가지). 그래서 표(인자 → 효과)와 별개로 **명령이 있는 함수의 역할**을 정책의 입력에 넣습니다.
 
-| 효과 | 위치 | 판정 |
+| 역할 | 어디 | 누가 / 언제 |
 |---|---|---|
-| `read` | 어디든 | 통과 (민감한 경로는 기존 경로 규칙이 따로 표시) |
-| `write`, `delete` | `srcdir`, `pkgdir`, `tmp` | 통과 |
-| `write`, `delete` | `home`, `system`, `unresolved` | 우려 (지금의 경로 규칙과 동일) |
-| `exec` 파일 | 소스·빌드 트리 (`./x`, `$srcdir/x`) | **expected** (빌드 함수에서만) |
-| `exec` 파일 | 그 밖, 설치 훅 | 우려 |
-| `exec` 문자열 / 표준입력 | | 안의 명령을 풀어서 같은 표로 검사, 풀 수 없으면 우려 |
-| `fetch` | | 기존 `build-time-download`, `dependency-fetch` 등이 맡음 |
-| `upload` | | 우려 |
-| `system` | | 우려 (이미 있는 `user-management` 등과 같은 규칙으로 통합) |
+| `parse` | 함수 밖(최상위), `pkgver()` | makepkg가 파일을 읽을 때, 일반 사용자 (의존성 해석 중에도 실행될 수 있음) |
+| `build` | `prepare()`, `build()`, `check()` | 일반 사용자, 빌드 중 |
+| `package` | `package()`, `package_<이름>()` | fakeroot 안의 일반 사용자, 패키지 만들 때 |
+| `hook` | `.install`의 `pre_install`, `post_install`, `pre_upgrade`, `post_upgrade`, `pre_remove`, `post_remove` | **root, 실제 시스템**, 설치·제거 때 |
+| `unknown` | 호출되는 곳을 알 수 없는 함수 | 가장 엄격한 쪽(`build`)으로 봄 |
+
+- 보조 함수는 **호출 그래프**로 역할을 정합니다. `_setup()`을 `build()`와 `post_install()`이 모두 부르면 두 역할의 합집합입니다. 어디서도 부르지 않는 함수는 `unknown`입니다.
+- `IR`의 단위가 이미 `runs`(`as-user`, `as-root-on-install`, `at-parse`)를 가지고 있으므로, 이 역할은 `runs`를 세분화한 것입니다.
+
+## 정책 (표와 분리)
+표 위에 올라가는 판정 규칙이며, 표를 건드리지 않고 바꿉니다. 입력은 **효과 × 위치(`area`) × 역할**이고, 결과는 통과 · `expected`(보여 주기만) · 우려 중 하나입니다.
+
+| 효과 | `parse` | `build` / `package` | `hook` |
+|---|---|---|---|
+| `read` | 통과 (민감한 경로는 기존 경로 규칙이 따로 표시) | 통과 | 통과 |
+| `write`, `delete` | 우려 | `srcdir`, `pkgdir`, `tmp`는 통과, `home`, `system`, `unresolved`는 우려 | 그 패키지 자신의 파일은 통과, 다른 곳은 기존 경로 규칙(`live-system-write` 등) |
+| `perm` | 우려 | `pkgdir` 안은 통과, 그 밖은 우려 | 기존 규칙(`setuid`, `setcap` 등) |
+| `exec` 파일 | 우려 | 소스·빌드 트리(`./x`, `$srcdir/x`)는 **expected**, 그 밖은 우려 | 우려 |
+| `exec` 문자열 / 표준입력 | 안의 명령을 풀어서 같은 표로 검사, 풀 수 없으면 우려 | 같음 | 같음 |
+| `fetch` | 우려 | 기존 `build-time-download`, `dependency-fetch` 등이 맡음 | 우려 (`install-hook-network`) |
+| `upload` | 우려 | 우려 | 우려 |
+| `system` | 우려 | **우려** (빌드가 시스템 상태를 바꾸면 안 됨) | 통과하되 기존 규칙(`user-management`, `kernel-module`, `systemd` 등)이 표시 |
+| `spawn` | 우려 | 우려 | 우려 |
+
+- 즉 `system`은 `hook`에서는 "정상적인 설치 동작이라 표시만", `build`/`package`/`parse`에서는 우려입니다. 인자 때문에 효과가 갈리는 경우(`makepkg -i`, `pacman -S`)는 표가 `system`으로 적고, 정책이 역할로 판정합니다.
+- 이 표는 시작점이며, 실제 값은 `measure`로 오탐과 미탐을 보면서 조정합니다.
 
 ## 이름 해석: 함수와 별칭이 명령 이름을 덮어쓰는 경우
 
@@ -116,5 +133,6 @@ sudo, env, time, xargs   exec=@cmd
 1. **표 형식과 읽는 코드**: 이 문서의 형식을 읽고 점검하는 모듈과 `--check`. 이 단계는 동작을 바꾸지 않는다.
 2. **`strict.py`가 표를 쓰게 한다.** 허용 목록과 `classify()`의 인자 검사를 표로 옮긴다. 이전 코드와 같은 입력 8,735개의 결과가 같아야 한다.
 3. **이름 해석 규칙(함수·별칭·경로)** 을 넣고 새 표시를 추가한다. 이 단계는 결과가 바뀌며 각 규칙을 시험으로 고정한다.
-4. **정책**을 올려서 `unknown-command`를 줄인다(소스 안 프로그램은 expected 등).
-5. `ir.py`가 같은 표를 쓰게 한다.
+4. **함수 역할과 호출 그래프**를 만든다(`parse`/`build`/`package`/`hook`/`unknown`). 이 단계는 동작을 바꾸지 않는다.
+5. **정책**을 올려서 `unknown-command`를 줄이고 `system`을 역할로 판정한다(소스 안 프로그램은 expected 등).
+6. `ir.py`가 같은 표와 역할을 쓰게 한다.
