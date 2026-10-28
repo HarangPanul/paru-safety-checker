@@ -156,3 +156,87 @@ def test_fetch_snapshot_with_real_git(tmp_path, monkeypatch):
     assert files == {"PKGBUILD": "pkgname=demo\n"} and len(rev) == 40
     with pytest.raises(FetchError):
         corpus.fetch_snapshot("missing")
+
+
+# ---- choosing targets by other criteria ----
+
+DAY = 86400
+NOW = 1_000_000_000
+META2 = [
+    {**entry("old", 9.0, votes=40), "LastModified": NOW - 400 * DAY, "FirstSubmitted": NOW - 900 * DAY},
+    {**entry("fresh", 1.0, votes=2), "LastModified": NOW - 2 * DAY, "FirstSubmitted": NOW - 3 * DAY},
+    {**entry("mid", 5.0, votes=6), "LastModified": NOW - 30 * DAY, "FirstSubmitted": NOW - 100 * DAY},
+    {**entry("gone", 3.0, votes=1, maintainer=None), "LastModified": NOW - 10 * DAY, "FirstSubmitted": NOW - 50 * DAY},
+    {**entry("late", 2.0, votes=3, out_of_date=1), "LastModified": NOW - 5 * DAY, "FirstSubmitted": NOW - 60 * DAY},
+]
+
+
+def pick(**kwargs):
+    kwargs.setdefault("min_votes", 0)
+    return corpus.select_packages(META2, 10, now=NOW, **kwargs)
+
+
+def test_recent_and_newest_orders():
+    assert pick(strategy="recent") == ["fresh", "mid", "old"]
+    assert pick(strategy="newest") == ["fresh", "mid", "old"]
+    assert pick(strategy="recent", include_orphans=True)[:3] == ["fresh", "late", "gone"]
+
+
+def test_low_votes_and_recently_modified_narrow_the_pick():
+    assert pick(max_votes=6) == ["mid", "fresh"]
+    assert pick(since_days=45) == ["mid", "fresh"]
+    assert pick(since_days=45, max_votes=2) == ["fresh"]
+
+
+def test_only_orphans_or_only_out_of_date():
+    assert pick(only="orphan") == ["gone"]
+    assert pick(only="out-of-date") == ["late"]
+    with pytest.raises(ValueError):
+        pick(only="bogus")
+
+
+def test_names_override_the_selection_and_keep_order(tmp_path):
+    names = tmp_path / "n.txt"
+    names.write_text("zeta  # last\n\n# a comment\nalpha\n-bad\nzeta\n")
+    listed = corpus.read_names(names)
+    assert listed == ["zeta", "alpha", "-bad", "zeta"]
+    assert corpus.select_packages([], 10, names=listed) == ["zeta", "alpha"]
+    assert corpus.select_packages([], 1, names=listed) == ["zeta"]
+
+
+def test_export_writes_one_folder_per_package_and_skips_unsafe_paths(tmp_path):
+    corpus_file = tmp_path / "pkgbuilds.jsonl"
+    records = [
+        {"name": "good", "rev": "1", "files": {"PKGBUILD": "x", "sub/a.patch": "p", "(omitted-files)": "n", "../evil": "e", "/abs": "e"}},
+        {"name": "broken", "error": "boom"},
+        {"name": "-bad", "files": {"PKGBUILD": "x"}},
+    ]
+    corpus_file.write_text("\n".join(json.dumps(r) for r in records) + "\n")
+    out = tmp_path / "targets"
+    assert corpus.export(corpus_file, out, "benign") == 1
+    assert (out / "benign" / "good" / "PKGBUILD").read_text() == "x"
+    assert (out / "benign" / "good" / "sub" / "a.patch").read_text() == "p"
+    assert sorted(p.name for p in (out / "benign" / "good").iterdir()) == ["PKGBUILD", "sub"]
+    assert not (out / "evil").exists() and not (tmp_path / "evil").exists()
+
+
+def test_export_layout_loads_in_the_logprob_experiment(tmp_path):
+    from experiments import yesno_logprob as yn
+    corpus_file = tmp_path / "pkgbuilds.jsonl"
+    corpus_file.write_text(json.dumps({"name": "p", "files": {"PKGBUILD": "build() { make; }"}}) + "\n")
+    corpus.export(corpus_file, tmp_path / "t", "benign")
+    packages = yn.load_packages(tmp_path / "t", 10000, None)
+    assert [p["id"] for p in packages] == ["benign/p"]
+
+
+def test_cli_export_and_collect_with_names(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(corpus, "fetch_snapshot", lambda base: ({"PKGBUILD": f"# {base}\n"}, "rev"))
+    monkeypatch.setattr(corpus.time, "sleep", lambda s: None)
+    names = tmp_path / "n.txt"
+    names.write_text("one\ntwo\n")
+    meta = tmp_path / "meta.json"
+    meta.write_text("[]")
+    assert corpus.main(["collect", "--out", str(tmp_path / "c"), "--meta", str(meta), "--names", str(names)]) == 0
+    assert corpus.main(["export", "--corpus", str(tmp_path / "c"), "--out", str(tmp_path / "t"), "--label", "benign"]) == 0
+    assert (tmp_path / "t" / "benign" / "two" / "PKGBUILD").read_text() == "# two\n"
+    assert "wrote 2 packages" in capsys.readouterr().out

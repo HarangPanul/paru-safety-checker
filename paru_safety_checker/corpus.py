@@ -2,6 +2,10 @@
 
     python -m paru_safety_checker.corpus collect --out data/corpus --count 500
     python -m paru_safety_checker.corpus measure --corpus data/corpus
+    python -m paru_safety_checker.corpus export --corpus data/corpus --out data/targets --label benign
+
+Other ways to pick targets: --strategy recent|newest, --max-votes 5, --since-days 30, --only orphan,
+--names list.txt (one package per line).
 
 The package list comes from the AUR's bulk metadata dump (one request), and each package is
 then cloned sequentially with a delay, so the AUR is never hit with a burst. Progress is
@@ -56,27 +60,80 @@ def load_meta(source: str, cache: Path | None = None) -> list[dict]:
     return json.loads(raw)
 
 
+STRATEGIES = ("top", "random", "recent", "newest")
+ONLY = ("orphan", "out-of-date")
+
+
 def select_packages(
     meta: list[dict], count: int, strategy: str = "top", min_votes: int = 0,
-    include_orphans: bool = False, seed: int = 0,
+    include_orphans: bool = False, seed: int = 0, *, only: str | None = None,
+    max_votes: int | None = None, since_days: float | None = None,
+    names: list[str] | None = None, now: float | None = None,
 ) -> list[str]:
     """Pick `count` package bases. Orphaned/out-of-date ones are skipped by default: orphans are
-    the hijack vector, so they do not belong in a presumed-benign baseline."""
+    the hijack vector, so they do not belong in a presumed-benign baseline; `only` selects exactly
+    those instead. `names` skips the selection and returns those packages in the given order.
+
+    strategy: top (popularity), random, recent (last modified first), newest (first submitted first).
+    max_votes / since_days narrow to the low-vote or freshly changed packages, where new malware sits."""
+    if strategy not in STRATEGIES:
+        raise ValueError(f"unknown strategy: {strategy!r}")
+    if only is not None and only not in ONLY:
+        raise ValueError(f"unknown filter: {only!r}")
+    if names is not None:
+        wanted = list(dict.fromkeys(n for n in names if valid_package_name(n)))
+        return wanted[:count]
+    now = time.time() if now is None else now
     best: dict[str, dict] = {}
     for entry in meta:
         base = entry.get("PackageBase") or entry.get("Name", "")
-        if not valid_package_name(base) or entry.get("NumVotes", 0) < min_votes:
+        votes = entry.get("NumVotes", 0)
+        if not valid_package_name(base) or votes < min_votes or (max_votes is not None and votes > max_votes):
             continue
-        if not include_orphans and (entry.get("Maintainer") is None or entry.get("OutOfDate")):
+        orphan, stale = entry.get("Maintainer") is None, bool(entry.get("OutOfDate"))
+        if only == "orphan" and not orphan:
+            continue
+        if only == "out-of-date" and not stale:
+            continue
+        if only is None and not include_orphans and (orphan or stale):
+            continue
+        if since_days is not None and entry.get("LastModified", 0) < now - since_days * 86400:
             continue
         if base not in best or entry.get("Popularity", 0) > best[base].get("Popularity", 0):
             best[base] = entry
-    bases = sorted(best, key=lambda b: (-best[b].get("Popularity", 0), b))
+    key = {
+        "recent": lambda b: (-best[b].get("LastModified", 0), b),
+        "newest": lambda b: (-best[b].get("FirstSubmitted", 0), b),
+    }.get(strategy, lambda b: (-best[b].get("Popularity", 0), b))
+    bases = sorted(best, key=key)
     if strategy == "random":
         random.Random(seed).shuffle(bases)
-    elif strategy != "top":
-        raise ValueError(f"unknown strategy: {strategy!r}")
     return bases[:count]
+
+
+def read_names(path: Path) -> list[str]:
+    """One package name per line; blank lines and `#` comments are ignored."""
+    lines = (line.split("#", 1)[0].strip() for line in path.read_text().splitlines())
+    return [line for line in lines if line]
+
+
+def export(corpus_file: Path, out_dir: Path, label: str) -> int:
+    """Write each collected package as `out_dir/label/<name>/<files>`: the layout experiments/yesno_logprob.py
+    reads (label `malicious` or `benign`), and an easy tree to browse or sort by hand."""
+    written = 0
+    for record in iter_records(corpus_file):
+        if "files" not in record or not valid_package_name(record.get("name", "")):
+            continue
+        root = out_dir / label / record["name"]
+        for name, text in record["files"].items():
+            relative = Path(name)
+            if name.startswith("(") or relative.is_absolute() or ".." in relative.parts:
+                continue                    # the "(omitted-files)" note, or a path that would leave the folder
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        written += 1
+    return written
 
 
 def fetch_snapshot(base: str) -> tuple[dict[str, str], str]:
@@ -217,12 +274,22 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--out", type=Path, default=Path("data/corpus"))
     c.add_argument("--meta", default=META_URL, help="metadata dump: URL or local file (default: AUR dump)")
     c.add_argument("--count", type=int, default=500)
-    c.add_argument("--strategy", choices=["top", "random"], default="top")
+    c.add_argument("--strategy", choices=STRATEGIES, default="top",
+                   help="top=popularity, random, recent=last modified, newest=first submitted")
     c.add_argument("--min-votes", type=int, default=10)
+    c.add_argument("--max-votes", type=int, help="only packages with at most this many votes (little-used ones)")
+    c.add_argument("--since-days", type=float, help="only packages modified in the last N days")
+    c.add_argument("--only", choices=ONLY, help="only orphaned / out-of-date packages (default: neither)")
+    c.add_argument("--names", type=Path, help="file with one package name per line; skips the selection")
     c.add_argument("--include-orphans", action="store_true")
     c.add_argument("--seed", type=int, default=0)
     c.add_argument("--delay", type=float, default=2.0, help="seconds between clones")
     c.add_argument("--jitter", type=float, default=1.0)
+
+    e = sub.add_parser("export", help="write the collected packages as one folder per package")
+    e.add_argument("--corpus", type=Path, default=Path("data/corpus"))
+    e.add_argument("--out", type=Path, default=Path("data/targets"))
+    e.add_argument("--label", default="unlabeled", help="sub-folder name (malicious / benign for the logprob experiment)")
 
     m = sub.add_parser("measure", help="scan the corpus and report false positives")
     m.add_argument("--corpus", type=Path, default=Path("data/corpus"))
@@ -232,13 +299,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "collect":
         meta = load_meta(args.meta, cache=args.out / META_NAME)
-        bases = select_packages(meta, args.count, args.strategy, args.min_votes, args.include_orphans, args.seed)
+        names = read_names(args.names) if args.names else None
+        bases = select_packages(meta, args.count, args.strategy, args.min_votes, args.include_orphans, args.seed,
+                                only=args.only, max_votes=args.max_votes, since_days=args.since_days, names=names)
         print(f"selected {len(bases)} package bases; ~{len(bases) * (args.delay + args.jitter / 2) / 60:.0f} min")
-        stats = collect(bases, args.out / CORPUS_NAME, delay=args.delay, jitter=args.jitter)
+        stats = collect(bases, args.out / CORPUS_NAME, fetch_snapshot, delay=args.delay, jitter=args.jitter, sleep=time.sleep)
         print(f"fetched={stats.fetched} failed={stats.failed} skipped(already done)={stats.skipped}")
         if stats.aborted:
             print(f"ABORTED: {stats.aborted}\nWait a while (hours if rate limited) and rerun; it resumes.", file=sys.stderr)
             return 1
+        return 0
+    if args.command == "export":
+        print(f"wrote {export(args.corpus / CORPUS_NAME, args.out, args.label)} packages to {args.out / args.label}")
         return 0
     report = measure(args.corpus / CORPUS_NAME, args.examples)
     print(format_report(report))

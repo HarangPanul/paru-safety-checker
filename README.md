@@ -122,6 +122,19 @@ python -m paru_safety_checker.corpus collect --out data/corpus --count 500
 python -m paru_safety_checker.corpus measure --corpus data/corpus --examples 3
 ```
 
+대상을 다르게 고르거나 폴더로 내보낼 수도 있습니다.
+
+```sh
+# 최근 30일 안에 바뀐 패키지 중 투표가 5표 이하인 것 (새 악성 패키지가 몰리는 구간)
+python -m paru_safety_checker.corpus collect --out data/corpus --count 300 --strategy recent --since-days 30 --max-votes 5 --min-votes 0
+# 고아(orphan) 패키지나 out-of-date 패키지만
+python -m paru_safety_checker.corpus collect --out data/corpus --only orphan --min-votes 0
+# 직접 모은 목록(한 줄에 패키지 하나, # 주석 가능)
+python -m paru_safety_checker.corpus collect --out data/corpus --names targets.txt
+# 패키지별 폴더로 내보내기: data/targets/<label>/<패키지>/PKGBUILD (label을 malicious/benign으로 두면 experiments/yesno_logprob.py가 그대로 읽음)
+python -m paru_safety_checker.corpus export --corpus data/corpus --out data/targets --label benign
+```
+
 AUR이 429/403을 돌려주면 지수 백오프로 재시도하고, 계속되면 중단합니다. `data/`는 git에서 제외됩니다.
 
 ## 라이선스
