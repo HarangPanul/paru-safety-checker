@@ -12,42 +12,12 @@ import re
 import shlex
 from typing import NamedTuple
 
+from . import commandtable
 from .models import Finding
 
-BUILD_ALLOWED = frozenset("""
-cd pushd popd pwd echo printf true false : test export unset local declare readonly set shopt shift return exit
-hash type read let wait continue break
-msg msg2 warning error plain plainerr vercmp awk gawk mawk arch-meson setcap
-./autogen.sh ./bootstrap ./bootstrap.sh ./buildconf ./waf ./b2 ./bjam
-ls cat cp mv rm mkdir rmdir ln install chmod chown chgrp touch find xargs sed grep egrep fgrep sort uniq head tail
-wc tr cut tee basename dirname readlink realpath date nproc uname id which stat du df diff cmp patch
-tar unzip zip bsdtar gzip gunzip bzip2 bunzip2 xz unxz zstd 7z 7za cpio ar strip objcopy objdump readelf nm
-sha256sum sha512sum sha1sum md5sum b2sum cksum gpg gpgv
-make gmake cmake ctest cpack ninja meson ./configure configure autoreconf autoconf automake autoheader libtoolize
-aclocal gettextize intltoolize glib-gettextize scons qmake qmake6 qmake-qt5 xmkmf pkg-config pkgconf
-gcc g++ cc c++ clang clang++ cpp ld ranlib as rustc cargo go gofmt
-python pypy pypy3 pip pip3 poetry pdm uv node npm pnpm yarn ruby gem bundle perl php composer
-java javac mvn gradle ant sbt dotnet dart flutter cabal stack ghc opam ocaml dune ocamlfind mix elixir erl rebar3
-luarocks lua luajit nim nimble zig crystal shards dub dmd ldc2 swift valac vala
-msgfmt msgmerge xgettext glib-compile-schemas glib-compile-resources desktop-file-validate desktop-file-install
-appstreamcli xdg-icon-resource gtk-update-icon-cache update-desktop-database fc-cache mkfontscale mkfontdir
-rsvg-convert convert magick sphinx-build doxygen asciidoctor help2man sass protoc flex bison yacc lex m4 nasm yasm
-patchelf chrpath install-info makeinfo texi2any fakeroot
-time nice env command timeout stdbuf ionice builtin
-""".split())
+# Which commands are ordinary packaging steps, and what their options and arguments do, is the command table
+# (commandtable_data.py, docs/COMMANDS.md); this module only turns what the table says into findings.
 
-# install hooks run as root on the live system: a much shorter list
-HOOK_ALLOWED = frozenset("""
-echo printf true false : test export unset local declare readonly set shift return exit read
-rm mkdir rmdir ln cp mv chmod chown touch grep getent id cat
-ldconfig update-desktop-database update-mime-database gtk-update-icon-cache gtk4-update-icon-cache
-glib-compile-schemas fc-cache depmod systemd-sysusers systemd-tmpfiles systemctl udevadm
-xdg-icon-resource xdg-desktop-menu xdg-mime gio gdk-pixbuf-query-loaders
-command type aa-enabled setcap
-""".split())
-
-GIT_SAFE = frozenset("""rev-parse rev-list describe log show status config apply init add diff ls-files cat-file
-symbolic-ref branch tag archive checkout reset am format-patch cherry-pick version""".split())
 SED_SUBST = re.compile(
     r"s(?P<d>[^\w\s\\])(?:\\.|(?!(?P=d)).)*(?P=d)(?:\\.|(?!(?P=d)).)*(?P=d)(?P<flags>[A-Za-z0-9]*)"
 )
@@ -170,8 +140,42 @@ def _awk_script_is_active(args: list[str]) -> bool:
     return any(AWK_ACTIVE.search(a) for a in args if not a.startswith("-"))
 
 
-def classify(command: Command, allowed: frozenset[str], local_functions: set[str]) -> tuple[str, str] | None:
-    """(rule, message) if the command is not an ordinary packaging step, else None."""
+def inline_flag(args: list[str]) -> str | None:
+    """The first option that gives an interpreter its program on the command line (-c, -e, ...), if any."""
+    for arg in args:
+        if arg == "-m" or not arg.startswith("-"):
+            return None
+        if INLINE_FLAG.match(arg):
+            return arg
+    return None
+
+
+# What a predicate in the table means as a finding. A rule of the command's entry whose predicate holds is reported
+# with this rule name and message ({name} is the program, {arg} the option that gave the code).
+PREDICATE_FINDINGS = {
+    "sed-active": ("inline-code", "sed script can run commands or write/read files (e, w, r)"),
+    "awk-active": ("inline-code", "{name} program can run commands (system, getline, a pipe) or is read from a file"),
+    "find-writes": ("inline-code", "find writes its output to a file"),
+    "tar-exec": ("inline-code", "{name} is told to run another program"),
+    "git-config-exec": ("inline-code", "git is configured to run another program (alias, ssh command, filter, hook path)"),
+    "inline-code": ("inline-code", "{name} runs code given on the command line ({arg})"),
+    "piped": ("inline-code", "{name} receives its program from a pipe"),
+    "pacman-write": ("unknown-command", "Command not on the allowlist (default-deny): {name}"),
+}
+
+
+def _table_key(table: commandtable.Table, name: str) -> str:
+    """The table's name for a command: `python3.11` is the `python` entry."""
+    if table.lookup(name) is None and INTERPRETERS.match(name):
+        base = name.rstrip("0123456789.")
+        if table.lookup(base) is not None:
+            return base
+    return name
+
+
+def classify(command: Command, where: str, local_functions: set[str]) -> tuple[str, str] | None:
+    """(rule, message) if the command is not an ordinary packaging step, else None. `where` is "build" for a
+    PKGBUILD and "hook" for an install script."""
     raw = command.name
     if raw == "__SUB__" or raw.startswith("$"):
         if SEARCH_TOOLCHAIN_VARS.fullmatch(raw):
@@ -180,39 +184,22 @@ def classify(command: Command, allowed: frozenset[str], local_functions: set[str
     name = _normalise(raw)
     if name in local_functions:
         return None
-    if name == "sed" and _sed_script_is_active(command.args):
-        return "inline-code", "sed script can run commands or write/read files (e, w, r)"
-    if name in AWKS and _awk_script_is_active(command.args):
-        return "inline-code", f"{name} program can run commands (system, getline, a pipe) or is read from a file"
-    if name == "pacman" and command.args and PACMAN_READ_ONLY.match(next((a for a in command.args if a.startswith("-")), "")):
-        return None
-    if name == "find" and any(a in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in command.args):
-        return "inline-code", "find writes its output to a file"
-    if name in ("tar", "bsdtar") and any(TAR_EXEC_OPTIONS.match(a) or a == "-I" for a in command.args):
-        return "inline-code", f"{name} is told to run another program"
-    if name == "git" and any(RISKY_GIT_CONFIG.search(a) for a in command.args):
-        return "inline-code", "git is configured to run another program (alias, ssh command, filter, hook path)"
-    if name == "git":
-        args = list(command.args)
-        while args[:1] == ["-C"]:
-            args = args[2:]
-        sub = next((a for a in args if not a.startswith("-")), "")
-        if sub in GIT_SAFE:
-            return None
-        return "unknown-command", f"git {sub or '(no subcommand)'} is not an ordinary local packaging step"
-    if INTERPRETERS.match(name):
-        for arg in command.args:
-            if arg == "-m" or not arg.startswith("-"):
-                break
-            if INLINE_FLAG.match(arg):
-                return "inline-code", f"{name} runs code given on the command line ({arg})"
-        if command.piped:
-            return "inline-code", f"{name} receives its program from a pipe"
-        return None if (name in allowed or INTERPRETERS.match(name) and name.rstrip("0123456789.") in allowed) else (
-            "unknown-command", f"Command not on the allowlist (default-deny): {name}")
-    if name in allowed:
-        return None
-    return "unknown-command", f"Command not on the allowlist (default-deny): {name}"
+    table = commandtable.load()
+    key = _table_key(table, name)
+    for rule, _, _ in table.fired(key, command.args, command.piped):
+        for condition in rule.conditions:
+            if condition.kind == "predicate" and not condition.negated and condition.names[0] in PREDICATE_FINDINGS:
+                found, message = PREDICATE_FINDINGS[condition.names[0]]
+                return found, message.format(name=name, arg=inline_flag(command.args) or "")
+    entry = table.lookup(key)
+    if entry is None or where not in (entry.where or ("build",)):
+        return "unknown-command", f"Command not on the allowlist (default-deny): {name}"
+    if entry.subs is not None:
+        for effect in table.effects_of(key, command.args, command.piped) or ():
+            if effect.kind == "unknown" and effect.target.startswith("subcommand"):
+                sub = effect.target[len("subcommand"):].strip()
+                return "unknown-command", f"{name} {sub or '(no subcommand)'} is not an ordinary local packaging step"
+    return None
 
 
 def normalise(name: str) -> str:
@@ -223,7 +210,7 @@ def scan_strict(name: str, source) -> list[Finding]:
     """`source` is a ParsedFile, or the script text."""
     from .parsed import parse                       # parsed.py imports this module
     parsed = parse(name, source)
-    allowed = HOOK_ALLOWED if name.endswith(".install") else BUILD_ALLOWED
+    where = "hook" if name.endswith(".install") else "build"
     local_functions = parsed.function_names
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
@@ -244,7 +231,7 @@ def scan_strict(name: str, source) -> list[Finding]:
         if not step.ok:
             add("unparseable-shell", f"Shell that could not be parsed, so it was not reviewed: {shown}", step.line, str(step.line))
         for command in step.commands:
-            verdict = classify(command, allowed, local_functions)
+            verdict = classify(command, where, local_functions)
             if verdict:
                 rule, message = verdict
                 add(rule, f"{message}: {shown}", step.line, command.name if rule == "unknown-command" else str(step.line))

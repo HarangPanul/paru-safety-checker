@@ -276,7 +276,7 @@ def build_ir(files: dict[str, str], findings: list[Finding] | None = None, packa
 
         functions = _functions(parsed)
         unit_steps: dict[str, list[str]] = {}
-        allowed = strict.HOOK_ALLOWED if hook else strict.BUILD_ALLOWED
+        where = "hook" if hook else "build"
         local = parsed.function_names
         variables = parsed.stable_variables
         ids: dict[int, str] = {}
@@ -289,7 +289,7 @@ def build_ir(files: dict[str, str], findings: list[Finding] | None = None, packa
             chain = list(invocation.views(pc.command))
             final = chain[-1]
             program = strict.normalise(final.name)
-            verdict = strict.classify(final, allowed, local)
+            verdict = strict.classify(final, where, local)
             known = verdict is None or verdict[0] == "inline-code" or (
                 verdict[0] == "unknown-command" and (program in TRANSLATED or invocation.interpreter(program)))
             fed_by = [ids[id(c)] for c in pc.upstream() if id(c) in ids]

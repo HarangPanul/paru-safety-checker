@@ -140,7 +140,7 @@ def _sed_active(ctx: Context) -> bool:
 
 def _awk_active(ctx: Context) -> bool:
     from .strict import _awk_script_is_active
-    return _awk_script_is_active(ctx.args) and not any(a == "-f" or a.startswith("--file") for a in ctx.args)
+    return _awk_script_is_active(ctx.args)
 
 
 def _tar_exec(ctx: Context) -> bool:
@@ -154,13 +154,12 @@ def _git_config_exec(ctx: Context) -> bool:
 
 
 def _inline_code(ctx: Context) -> bool:
-    from .strict import INLINE_FLAG
-    for arg in ctx.args:
-        if arg == "-m" or not arg.startswith("-"):
-            return False
-        if INLINE_FLAG.match(arg):
-            return True
-    return False
+    from .strict import inline_flag
+    return inline_flag(ctx.args) is not None
+
+
+def _find_writes(ctx: Context) -> bool:
+    return any(a in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in ctx.args)
 
 
 def _pacman_write(ctx: Context) -> bool:
@@ -175,6 +174,7 @@ PREDICATES: dict[str, Callable[[Context], bool]] = {
     "tar-exec": _tar_exec,
     "git-config-exec": _git_config_exec,
     "inline-code": _inline_code,
+    "find-writes": _find_writes,
     "piped": lambda ctx: ctx.piped,
     "pacman-write": _pacman_write,
     "shopt-expand-aliases": lambda ctx: "expand_aliases" in ctx.args,
@@ -361,19 +361,17 @@ class Table:
         entry = self.by_name.get(name)
         if entry is None:
             return None
-        valued = set(entry.valued)
-        for rule in entry.rules:
-            valued |= set(rule.target.opts)
-        args = list(args)
-        mode = None
-        if entry.mode_first and args and MODE.match(args[0]):
-            mode = args.pop(0)
-        elif entry.bundled_first and args and BUNDLED.match(args[0]):
-            args[0] = "-" + args[0]
-        parsed = split_args(args, valued, entry.single_dash_long)
-        if mode is not None:
-            parsed.positional.insert(0, mode)
-        ctx = Context(list(args), parsed, piped, entry)
+        found = self._unknown_effects(entry, args)
+        for _, targets, kind in self.fired(name, args, piped):
+            for target in targets:
+                effect = Effect(kind, target)
+                if effect not in found:
+                    found.append(effect)
+        return found
+
+    def _unknown_effects(self, entry: Entry, args: list[str]) -> list[Effect]:
+        args, mode = self._prepare(entry, args)
+        parsed = self._parse(entry, args, mode)
         found: list[Effect] = []
         covers = entry.covers or ()
         if covers != ("*",):
@@ -384,13 +382,39 @@ class Table:
             sub = parsed.positional[0] if parsed.positional else ""
             if sub not in entry.subs:
                 found.append(Effect("unknown", f"subcommand {sub}".strip()))
-        for rule in entry.rules:
-            if all(_holds(c, ctx) for c in rule.conditions):
-                for target in _resolve_target(rule.target, ctx):
-                    effect = Effect(rule.kind, target)
-                    if effect not in found:
-                        found.append(effect)
         return found
+
+    @staticmethod
+    def _prepare(entry: Entry, args: list[str]):
+        args = list(args)
+        mode = None
+        if entry.mode_first and args and MODE.match(args[0]):
+            mode = args.pop(0)
+        elif entry.bundled_first and args and BUNDLED.match(args[0]):
+            args[0] = "-" + args[0]
+        return args, mode
+
+    @staticmethod
+    def _parse(entry: Entry, args: list[str], mode: str | None = None) -> Parsed:
+        valued = set(entry.valued)
+        for rule in entry.rules:
+            valued |= set(rule.target.opts)
+        parsed = split_args(args, valued, entry.single_dash_long)
+        if mode is not None:
+            parsed.positional.insert(0, mode)
+        return parsed
+
+    def fired(self, name: str, args: list[str], piped: bool = False) -> list:
+        """The rules of the entry whose conditions hold for this command line, as (rule, targets, kind).
+        strict.py reads the predicate conditions of these to decide what it reports."""
+        entry = self.by_name.get(name)
+        if entry is None:
+            return []
+        args, mode = self._prepare(entry, args)
+        parsed = self._parse(entry, args, mode)
+        ctx = Context(args, parsed, piped, entry)
+        return [(rule, _resolve_target(rule.target, ctx), rule.kind)
+                for rule in entry.rules if all(_holds(c, ctx) for c in rule.conditions)]
 
 
 def _covered(flag: str, covers: tuple) -> bool:

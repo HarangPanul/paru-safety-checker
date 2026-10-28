@@ -281,7 +281,7 @@ find
     read = @find-paths
     exec = @find-exec
     delete = @find-paths [-delete]
-    write = @opt(-fprint|-fprint0|-fprintf|-fls)
+    write = @opt(-fprint|-fprint0|-fprintf|-fls) [?find-writes]
     ex: find . -name x => read .
     ex: find src -delete => delete src; read src
     ex: find . -exec chmod +x {} + => exec chmod; read .
@@ -473,6 +473,7 @@ command
 
 git
     covers: *
+    where: build hook
     valued: -C -c --git-dir --work-tree --namespace
     subs: rev-parse rev-list describe log show status config apply init add diff ls-files cat-file symbolic-ref branch tag archive checkout reset am format-patch cherry-pick version
     read = @tree
@@ -485,6 +486,7 @@ git
 
 pacman
     covers: *
+    where: build hook
     system = packages [?pacman-write]
     ex: pacman -Q foo => none
     ex: pacman -S foo => system packages

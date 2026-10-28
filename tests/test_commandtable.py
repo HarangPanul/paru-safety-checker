@@ -1,10 +1,38 @@
 import pytest
 
 from paru_analyzer import commandtable as ct
-from paru_analyzer.strict import BUILD_ALLOWED, HOOK_ALLOWED
 
-# commands that are in the table but not in the allowlists (strict.py handles them in code today)
+# the allowlists that strict.py had before it read the table, kept so the table cannot lose a command unnoticed
+OLD_BUILD_ALLOWED = frozenset("""
+./autogen.sh ./b2 ./bjam ./bootstrap ./bootstrap.sh ./buildconf ./configure ./waf 7z 7za : aclocal ant
+appstreamcli ar arch-meson as asciidoctor autoconf autoheader automake autoreconf awk b2sum basename bison
+break bsdtar builtin bundle bunzip2 bzip2 c++ cabal cargo cat cc cd chgrp chmod chown chrpath cksum clang
+clang++ cmake cmp command composer configure continue convert cp cpack cpio cpp crystal ctest cut dart date
+declare desktop-file-install desktop-file-validate df diff dirname dmd dotnet doxygen du dub dune echo egrep
+elixir env erl error exit export fakeroot false fc-cache fgrep find flex flutter g++ gawk gcc gem gettextize
+ghc glib-compile-resources glib-compile-schemas glib-gettextize gmake go gofmt gpg gpgv gradle grep
+gtk-update-icon-cache gunzip gzip hash head help2man id install install-info intltoolize ionice java javac ld
+ldc2 let lex libtoolize ln local ls lua luajit luarocks m4 magick make makeinfo mawk md5sum meson mix mkdir
+mkfontdir mkfontscale msg msg2 msgfmt msgmerge mv mvn nasm nice nim nimble ninja nm node npm nproc objcopy
+objdump ocaml ocamlfind opam patch patchelf pdm perl php pip pip3 pkg-config pkgconf plain plainerr pnpm
+poetry popd printf protoc pushd pwd pypy pypy3 python qmake qmake-qt5 qmake6 ranlib read readelf readlink
+readonly realpath rebar3 return rm rmdir rsvg-convert ruby rustc sass sbt scons sed set setcap sha1sum
+sha256sum sha512sum shards shift shopt sort sphinx-build stack stat stdbuf strip swift tail tar tee test
+texi2any time timeout touch tr true type uname uniq unset unxz unzip update-desktop-database uv vala valac
+vercmp wait warning wc which xargs xdg-icon-resource xgettext xmkmf xz yacc yarn yasm zig zip zstd
+""".split())
+
+OLD_HOOK_ALLOWED = frozenset("""
+: aa-enabled cat chmod chown command cp declare depmod echo exit export false fc-cache
+gdk-pixbuf-query-loaders getent gio glib-compile-schemas grep gtk-update-icon-cache gtk4-update-icon-cache id
+ldconfig ln local mkdir mv printf read readonly return rm rmdir set setcap shift systemctl systemd-sysusers
+systemd-tmpfiles test touch true type udevadm unset update-desktop-database update-mime-database
+xdg-desktop-menu xdg-icon-resource xdg-mime
+""".split())
+
+# in the table but not in the old allowlists: git and pacman were special cases in the code, python2/3 stood for a pattern
 BUILD_ONLY_IN_TABLE = {"git", "pacman", "python2", "python3"}
+HOOK_ONLY_IN_TABLE = {"git", "pacman"}
 
 
 def effects(name, *args, piped=False):
@@ -23,9 +51,9 @@ def test_the_shipped_table_has_no_problems_and_every_example_holds():
 
 def test_the_table_covers_every_allowlisted_command():
     t = ct.load()
-    assert BUILD_ALLOWED <= t.names("build") and HOOK_ALLOWED <= t.names("hook")
-    assert t.names("build") - BUILD_ALLOWED == BUILD_ONLY_IN_TABLE
-    assert t.names("hook") - HOOK_ALLOWED == set()
+    assert OLD_BUILD_ALLOWED <= t.names("build") and OLD_HOOK_ALLOWED <= t.names("hook")
+    assert t.names("build") - OLD_BUILD_ALLOWED == BUILD_ONLY_IN_TABLE
+    assert t.names("hook") - OLD_HOOK_ALLOWED == HOOK_ONLY_IN_TABLE
 
 
 def test_every_entry_has_a_note_an_example_and_a_covers_line():
