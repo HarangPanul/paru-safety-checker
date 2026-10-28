@@ -6,8 +6,8 @@ from paru_analyzer.heuristics import RULES, level_of, scan
 
 def in_function(line, name="PKGBUILD"):
     if name.endswith(".install"):
-        return {name: f"post_install() {{\n  {line}\n}}"}
-    return {name: f"build() {{\n  {line}\n}}"}
+        return {name: f"post_install() {{\n  {line}\n  :\n}}"}
+    return {name: f"build() {{\n  {line}\n  :\n}}"}
 
 
 def found(files, rule):

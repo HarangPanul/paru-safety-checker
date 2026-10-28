@@ -2,8 +2,9 @@
 
 The rule engines used to receive the file's text and each parse it again in its own way (a regex
 over lines here, `shlex` over a command there, `text.find(item)` to recover a line number). They now
-receive a `ParsedFile`: the preprocessed command lines, the commands split into words with quotes
-removed, the variables and arrays the script assigns, and the line every array item sits on.
+receive a `ParsedFile`: the syntax tree (shast.py), the commands and steps made from it (astadapt.py),
+the variables and arrays the script assigns, and the line every array item sits on. The only text view
+left is `units`, the lines the pattern rules match (the lexer's output, see preprocess.py).
 
 The raw text is deliberately not an attribute. `raw_text()` exists for the few checks that are about
 the bytes themselves (invisible characters, the cross-check against bash, the truncation marker), so
@@ -12,21 +13,14 @@ that `grep raw_text` lists every place a checker looks past the parse.
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass
 from functools import cached_property
 from typing import NamedTuple
 
 from . import astadapt, shast
 from .invocation import payload, views
-from .preprocess import Line, Preprocessed, preprocess
-from .strict import Command, extract_commands, strip_substitutions
-
-ARRAY_LINE = re.compile(r"^[A-Za-z_]\w*(?:\[[^\]]*\])?(\+?)=\((.*)\)\s*$", re.S)
-ARRAY_NAME = re.compile(r"^([A-Za-z_]\w*)")
-OPENS_PIPED_GROUP = re.compile(r"\|&?\s*[({][^)}]*$")
-CLOSES_GROUP = re.compile(r"[)}]\s*(?:[|&;<>].*)?$")
-HEREDOC_OPEN = re.compile(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+from .preprocess import Preprocessed, preprocess
+from .strict import Command
 
 
 class Unit(NamedTuple):
@@ -37,23 +31,6 @@ class Unit(NamedTuple):
     heredoc: bool = False           # the body of a here-document: text written somewhere, not a command
 
 
-class Group:
-    """The commands found so far on one source line, in order. A pipe that follows a closing `)` or `}`
-    (`{ curl x; echo; } | sh`) is fed by all of them, so a command after such a pipe points at its group
-    and the number of commands the group held at that moment, instead of copying them."""
-
-    def __init__(self) -> None:
-        self.commands: list[Command] = []
-        self._prefix: list[frozenset] = []          # _prefix[i]: tags of commands[:i + 1], filled on demand
-
-    def tags(self, tagger, upto: int) -> frozenset:
-        while len(self._prefix) < min(upto, len(self.commands)):
-            index = len(self._prefix)
-            previous = self._prefix[-1] if self._prefix else frozenset()
-            self._prefix.append(previous | tagger(self.commands[index]))
-        return self._prefix[min(upto, len(self.commands)) - 1] if upto and self.commands else frozenset()
-
-
 class ParsedCommand(NamedTuple):
     """A simple command plus where it is and what surrounds it."""
     command: Command
@@ -62,7 +39,6 @@ class ParsedCommand(NamedTuple):
     top: bool                       # outside every function: runs when the file is merely parsed
     siblings: tuple                 # every Command extracted from the same line, in order
     stage_map: dict | None = None   # segment -> commands, built once per line and shared by its commands
-    fed_by: tuple | None = None     # (Group, count): the commands before this line that feed its leading pipe
 
     def upstream(self) -> list[Command]:
         """Commands of the earlier stages of the pipeline this command receives its input from."""
@@ -72,9 +48,6 @@ class ParsedCommand(NamedTuple):
         while stage in by_stage and by_stage[stage][0].piped and stage - 1 in by_stage:
             stage -= 1
             found.extend(by_stage[stage])
-        if self.fed_by and stage in by_stage and by_stage[stage][0].piped:
-            group, count = self.fed_by
-            found.extend(reversed(group.commands[:count]))
         return found
 
     def _stages(self) -> dict:
@@ -101,8 +74,6 @@ class ParsedCommand(NamedTuple):
             stage -= 1
         if stage in memo:
             before = memo[stage]
-        elif self.fed_by and stage in by_stage and by_stage[stage][0].piped:
-            before = self.fed_by[0].tags(tagger, self.fed_by[1])     # the pipe at the bottom is fed by a group
         else:
             before = frozenset()
         for stage in reversed(chain):
@@ -130,30 +101,6 @@ class Definition(NamedTuple):
     items: list
     line: int
     item_lines: list
-
-
-def array_items(body: str) -> list[str]:
-    try:
-        return shlex.split(body)
-    except ValueError:
-        return [t.strip("'\"") for t in re.findall(r"'[^']*'|\"[^\"]*\"|\S+", body)]
-
-
-def literal_variables(pre: Preprocessed) -> dict[str, str]:
-    """Literal assignments (`url="https://..."`), used to expand $url in source arrays."""
-    found: dict[str, str] = {}
-    for line in pre.lines:
-        if line.kind != "assignment" or "$(" in line.text or "`" in line.text:
-            continue
-        try:
-            words = shlex.split(line.text)
-        except ValueError:
-            continue
-        for word in words:
-            match = re.match(r"^(\w+)=(.*)$", word, re.S)
-            if match:
-                found.setdefault(match.group(1), match.group(2))
-    return found
 
 
 def _assignments(tree) -> list:
@@ -213,45 +160,12 @@ def expand(value: str, variables: dict[str, str]) -> str:
     return value
 
 
-def _item_lines(pre: Preprocessed, line: Line, items: list[str]) -> list[int]:
-    """Line of each array item, searched inside the statement that defines the array, in order. The
-    search resumes after the previous item, so two identical items get their own lines."""
-    numbers: list[int] = []
-    number, column = line.number, 0
-    last = max(line.end, line.number)
-    for item in items:
-        found = None
-        probe, start = number, column
-        while probe <= last:
-            text = pre.source_lines[probe - 1] if 0 < probe <= len(pre.source_lines) else ""
-            index = text.find(item, start)
-            if index >= 0:
-                found = (probe, index + len(item))
-                break
-            probe, start = probe + 1, 0
-        if found:
-            number, column = found
-        numbers.append(found[0] if found else line.number)
-    return numbers
-
-
-def definitions(pre: Preprocessed):
-    """Every array assignment, in file order, nothing merged."""
-    for line in pre.lines:
-        if line.kind != "array":
-            continue
-        match, name = ARRAY_LINE.match(line.text), ARRAY_NAME.match(line.text)
-        if match and name:
-            items = array_items(match.group(2))
-            yield Definition(name.group(1), bool(match.group(1)), items, line.number, _item_lines(pre, line, items))
-
-
-def collect_arrays(pre: Preprocessed, overridden: list | None = None, defs=None) -> dict[str, Array]:
+def collect_arrays(defs, overridden: list | None = None) -> dict[str, Array]:
     """name -> Array as makepkg would see it: `+=` appends, a later `=` replaces. The values that were
     replaced are appended to `overridden` as (name, Array), because a replaced source is still
     something the author wrote and must not escape review."""
     arrays: dict[str, Array] = {}
-    for d in (definitions(pre) if defs is None else defs):
+    for d in defs:
         if d.appends and d.name in arrays:
             old = arrays[d.name]
             merged = Array(old.items + d.items, old.line, old.item_lines + d.item_lines)
@@ -263,49 +177,7 @@ def collect_arrays(pre: Preprocessed, overridden: list | None = None, defs=None)
     return arrays
 
 
-def _commands_of(line: Line) -> tuple[list[Command], bool]:
-    """Commands a preprocessed line runs. At the top level only substitutions run (a declaration
-    is not a command), except for real commands, which run when the file is parsed."""
-    top = line.region == "top"
-    if line.kind == "heredoc":
-        # An unquoted here-document is expanded by the shell: $(...) and `...` in it run.
-        if line.expands and ("$(" in line.text or "`" in line.text):
-            return _substitutions(line.text), True
-        return [], False
-    if top and line.kind not in ("command", "control"):
-        return _substitutions(line.text), True
-    return extract_commands(line.text)[0], True
-
-
 MAX_PAYLOAD_DEPTH = 4
-USE_AST = True                  # False: the older text-based route (kept to compare the two)
-
-
-def _collect(found: list[Command], line: Line, out: list, depth: int, fed_by: tuple | None = None) -> None:
-    """Add a line's commands, then the commands inside any `sh -c STR` / `eval STR` they start."""
-    siblings = tuple(found)
-    stage_map: dict[int, list[Command]] = {}
-    for other in siblings:
-        stage_map.setdefault(other.segment, []).append(other)
-    out.extend(ParsedCommand(c, line.number, line.text, line.region == "top", siblings, stage_map, fed_by) for c in found)
-    if depth >= MAX_PAYLOAD_DEPTH:
-        return
-    for command in found:
-        for view in views(command):
-            text = payload(view.name, view.args)
-            if text and text.strip("_SUB ").strip():
-                inner, _ = extract_commands(text)
-                if inner:
-                    _collect(inner, line, out, depth + 1)
-
-
-def _substitutions(text: str) -> list[Command]:
-    _, subs = strip_substitutions(text)
-    found: list[Command] = []
-    stages = [0]
-    for inner in subs:
-        found.extend(extract_commands(inner, 0, stages)[0])
-    return found
 
 
 def _emit(commands: tuple, text: str, top: bool, out: list, depth: int) -> None:
@@ -324,8 +196,8 @@ def _emit(commands: tuple, text: str, top: bool, out: list, depth: int) -> None:
             payload_text = payload(view.name, view.args)
             if payload_text and payload_text.strip("_SUB ").strip():
                 inner, ok = astadapt.flatten(payload_text)
-                if not ok:                           # not valid shell: read it as loosely as before
-                    inner = tuple(extract_commands(payload_text)[0]) or inner
+                if not ok:                           # not valid shell: read what can be read, loosely
+                    inner = astadapt.loose(payload_text) or inner
                 if inner:
                     _emit(tuple((c, line) for c in inner), text, top, out, depth + 1)
 
@@ -395,92 +267,65 @@ class ParsedFile:
         return shast.parse(self._text) if self.is_shell else None
 
     @cached_property
-    def _analysis(self) -> tuple:
-        if self.pre is None:
-            return (), frozenset()
-        if USE_AST:
-            return self._analysis_from_tree()
-        return self._analysis_from_text()
-
-    def _analysis_from_tree(self) -> tuple:
-        if not self.pre.ok:                          # the tokenizer failed: nothing was read
+    def _units(self) -> tuple:
+        """(units, lines of unreadable statements) of the syntax tree; nothing when the tokenizer failed."""
+        if self.pre is None or not self.pre.ok:
             return (), frozenset()
         units, bad = astadapt.units(self.ast.script)
-        out: list[ParsedCommand] = []
-        for unit in units:
-            _emit(unit.commands, unit.text, unit.top, out, 0)
-        return tuple(out), frozenset(bad)
+        return tuple(units), frozenset(bad)
 
-    def _analysis_from_text(self) -> tuple:
+    @cached_property
+    def _analysis(self) -> tuple:
         out: list[ParsedCommand] = []
-        bad: set[int] = set()
-        group, group_line = Group(), 0          # the commands of the current source line, for pipes after `)` / `}`
-        feeding = False                         # inside a `( ... )` / `{ ... }` that a pipe feeds
-        for line in self.pre.lines:
-            if line.kind in ("heredoc-end", "case-pattern", "function"):
-                continue
-            continues = line.text.lstrip().startswith("|")
-            if not feeding and not continues and line.number != group_line:
-                group, group_line = Group(), line.number
-            closing = feeding and line.text.rstrip().endswith(")")
-            found, ok = _commands_of(line._replace(text=line.text.rstrip()[:-1]) if closing else line)
-            if not ok:
-                bad.add(line.number)
-            fed_by = None
-            if (feeding or continues) and found and group.commands:
-                # `(curl x) | sh` reaches us as `curl x` and `| sh`; `curl x | (cd /tmp; sh)` as
-                # `curl x | (cd /tmp` and `sh)`. Those lines read a pipe the earlier ones feed.
-                fed_by = (group, len(group.commands))
-                found = [found[0]._replace(piped=True)] + found[1:]
-            _collect(found, line, out, 0, fed_by)
-            group.commands.extend(found)
-            if feeding and found:
-                feeding = not CLOSES_GROUP.search(line.text)
-            elif not feeding and found and OPENS_PIPED_GROUP.search(line.text):
-                feeding = True
-        return tuple(out), frozenset(bad)
+        for unit in self._units[0]:
+            _emit(unit.commands, unit.text, unit.top, out, 0)
+        return tuple(out), self._units[1]
+
+    @cached_property
+    def steps(self) -> tuple:
+        """What the default-deny check and the activity inventory read (see astadapt.Step)."""
+        if self.pre is not None and not self.pre.ok:       # the tokenizer failed: no unit exists, say so once
+            return (astadapt.Step(1, self._text.strip()[:100], True, False, False, False, [], False, [], False, False),)
+        return tuple(astadapt.steps(list(self._units[0])))
+
+    @cached_property
+    def function_names(self) -> frozenset:
+        """Functions the file defines: calling one is not running an unknown program."""
+        if self.pre is None or not self.pre.ok:
+            return frozenset()
+        return frozenset(n.name for n in shast.walk(self.ast.script) if isinstance(n, shast.FunctionDef))
+
+    @cached_property
+    def toplevel_commands(self) -> tuple:
+        """The units outside every function that run something (a command, not a plain declaration)."""
+        return tuple(u for u in self._units[0] if u.top and u.code and u.ok)
 
     @cached_property
     def _tree(self):
-        """The syntax tree when it covers the whole file (no statement was left unread), else None and the
-        text route answers: an unread statement could hide an assignment."""
-        if not USE_AST or self.pre is None or self.ast is None or self.ast.errors:
-            return None
-        return self.ast
+        """The syntax tree of a shell file, None for other files. A statement it could not read is in
+        `unparsed_lines` and is read by the pattern rules; an assignment hidden in one is not seen."""
+        return self.ast if self.pre is not None else None
 
     def assignment_line(self, name: str) -> int | None:
         """Line of the first plain assignment or array definition of `name`."""
-        if self.pre is None:
+        if self._tree is None:
             return None
-        if self._tree is not None:
-            for node in _assignments(self._tree):
-                if any(a.name == name and a.index is None for a in node.assigns):
-                    return node.line
-            return None
-        for line in self.pre.lines:
-            if line.kind in ("assignment", "array") and re.match(rf"{re.escape(name)}\+?=", line.text):
-                return line.number
+        for node in _assignments(self._tree):
+            if any(a.name == name and a.index is None for a in node.assigns):
+                return node.line
         return None
 
     @cached_property
     def variables(self) -> dict[str, str]:
-        if self._tree is not None:
-            return variables_from_tree(self._tree)
-        return literal_variables(self.pre) if self.pre is not None else {}
+        return variables_from_tree(self._tree) if self._tree is not None else {}
 
     @cached_property
     def stable_variables(self) -> dict[str, str]:
         """Literal variables assigned exactly once in the file, so `$d` means the same thing wherever it is
         used. A name assigned twice (`dir=/etc` then `dir=$pkgdir/etc`) is left out: either value may apply."""
-        if self.pre is None:
+        if self._tree is None:
             return {}
-        counts: dict[str, int] = {}
-        if self._tree is not None:
-            counts = assignment_counts(self._tree)
-        for line in () if self._tree is not None else self.pre.lines:
-            if line.kind in ("assignment", "array"):
-                for name in re.findall(r"(?:^|\s)(?:local\s+|declare\s+(?:-\w+\s+)?|export\s+|readonly\s+)?([A-Za-z_]\w*)\+?=", line.text):
-                    counts[name] = counts.get(name, 0) + 1
+        counts = assignment_counts(self._tree)
         return {k: v for k, v in self.variables.items() if counts.get(k, 0) == 1 and k not in ("pkgdir", "srcdir", "startdir")}
 
     @cached_property
@@ -490,14 +335,11 @@ class ParsedFile:
     @cached_property
     def replaced_arrays(self) -> tuple[dict[str, Array], list]:
         replaced: list = []
-        arrays = collect_arrays(self.pre, replaced, self.definitions) if self.pre is not None else {}
-        return arrays, replaced
+        return collect_arrays(self.definitions, replaced), replaced
 
     @cached_property
     def definitions(self) -> tuple[Definition, ...]:
-        if self._tree is not None:
-            return tuple(definitions_from_tree(self._tree))
-        return tuple(definitions(self.pre)) if self.pre is not None else ()
+        return tuple(definitions_from_tree(self._tree)) if self._tree is not None else ()
 
 
 def parse(name: str, source) -> ParsedFile:

@@ -1,8 +1,10 @@
 """Shell preprocessing: remove comments and put every command on its own line.
 
-All later analysis (regex rules, the default-deny check, the activity report) reads the output of
-this module instead of the raw file, so layout tricks cannot hide anything from it: several
+This is the lexical layer. The pattern rules match its lines, the AI is shown its rendering, and
+crosscheck.py compares it with bash, so layout tricks cannot hide anything from them: several
 commands on one line, continuation lines, commands spread over many lines, comments in odd places.
+The structure of a script (commands, pipes, assignments, functions) is not read from these lines: it
+comes from the syntax tree in shast.py, which is built on this module's scanner.
 
 One output line is one *command*. A pipeline (`a | b`) stays together, because the rules that look
 for `curl | sh` need to see both sides; commands joined by `;`, `&&`, `||`, `&` or a newline are

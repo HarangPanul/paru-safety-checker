@@ -32,9 +32,10 @@ Suggested first steps:
 3. Only for closed steps, emit the non-access list; map everything onto `effects` and `gaps` in `docs/IR.md`.
 
 ## Other recorded items
-- Move the remaining old-route readers to the syntax tree (arrays and variables are done; they fall back to the
-  text route when the tree has an unread statement): regex input lines (`units`), `strict.py`, the `activity.py` step list; then remove
-  `Group`/`feeding`/`_split_operators` and `parsed.USE_AST`.
+- Run the cross-check against bash (`crosscheck.py`) on the syntax tree instead of the lexer's lines, and let the
+  pattern rules read units made from the tree (they still read `preprocess.py`'s lines, a lexical view).
+  Statements the grammar cannot read hide their assignments from `definitions`/`variables`; consider reading
+  arrays out of those lines with a small fallback.
 - Validate the parser and adapter on the real 500-package corpus (parse failure rate, agreement with `bash -n`,
   old/new route differences).
 - Split facts from marks in the level computation (external-source, prebuilt-source, symlink, binary-in-repo,

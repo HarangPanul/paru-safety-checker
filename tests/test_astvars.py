@@ -1,7 +1,6 @@
-"""Arrays and variables read from the syntax tree, checked against the older text route."""
+"""Arrays and variables read from the syntax tree."""
 import pytest
 
-from paru_analyzer import parsed
 from paru_analyzer.parsed import ParsedFile
 
 CASES = {
@@ -21,32 +20,82 @@ CASES = {
 }
 
 
+# What the text-based route gave for the same files, recorded before it was removed.
+EXPECTED = {'plain': {'definitions': [('source', False, ['https://e.com/$pkgname-$pkgver.tar.gz', 'b.patch', 'c'], 3, [3, 3, 3])],
+           'variables': {'pkgname': 'x', 'pkgver': '1.0'},
+           'stable': {'pkgname': 'x', 'pkgver': '1.0'},
+           'arrays': {'source': (['https://e.com/$pkgname-$pkgver.tar.gz', 'b.patch', 'c'], 3, [3, 3, 3])},
+           'd': None,
+           'source': 3},
+ 'multi-line array': {'definitions': [('source', False, ['a', 'b $c', 'd::e'], 1, [2, 3, 4])],
+                      'variables': {},
+                      'stable': {},
+                      'arrays': {'source': (['a', 'b $c', 'd::e'], 1, [2, 3, 4])},
+                      'd': None,
+                      'source': 1},
+ 'append': {'definitions': [('source', False, ['a'], 1, [1]), ('source', True, ['b', 'c'], 2, [2, 2])],
+            'variables': {},
+            'stable': {},
+            'arrays': {'source': (['a', 'b', 'c'], 1, [1, 2, 2])},
+            'd': None,
+            'source': 1},
+ 'replaced': {'definitions': [('source', False, ['a'], 1, [1]), ('source', False, ['b'], 2, [2])],
+              'variables': {},
+              'stable': {},
+              'arrays': {'source': (['b'], 2, [2])},
+              'd': None,
+              'source': 1},
+ 'two assignments': {'definitions': [],
+                     'variables': {'d': '/etc', 'u': '/usr'},
+                     'stable': {'u': '/usr'},
+                     'arrays': {},
+                     'd': 1,
+                     'source': None},
+ 'in function': {'definitions': [],
+                 'variables': {'x': '1', 'y': '$x/y'},
+                 'stable': {'x': '1', 'y': '$x/y'},
+                 'arrays': {},
+                 'd': None,
+                 'source': None},
+ 'one line': {'definitions': [],
+              'variables': {'a': '1', 'b': '2'},
+              'stable': {'a': '1', 'b': '2'},
+              'arrays': {},
+              'd': None,
+              'source': None},
+ 'command value': {'definitions': [], 'variables': {'c': 'ok'}, 'stable': {'c': 'ok'}, 'arrays': {}, 'd': None, 'source': None},
+ 'append string': {'definitions': [], 'variables': {'a': '1'}, 'stable': {}, 'arrays': {}, 'd': None, 'source': None},
+ 'indexed': {'definitions': [], 'variables': {'b': 'y'}, 'stable': {'b': 'y'}, 'arrays': {}, 'd': None, 'source': None},
+ 'depends': {'definitions': [('depends', False, ['glibc>=2.3', 'gtk3'], 1, [1, 1]), ('makedepends', True, ['git'], 2, [2])],
+             'variables': {},
+             'stable': {},
+             'arrays': {'depends': (['glibc>=2.3', 'gtk3'], 1, [1, 1]), 'makedepends': (['git'], 2, [2])},
+             'd': None,
+             'source': None},
+ 'if block': {'definitions': [], 'variables': {'v': '1'}, 'stable': {'v': '1'}, 'arrays': {}, 'd': None, 'source': None},
+ 'escaped': {'definitions': [],
+             'variables': {'a': "it's", 'b': 'q"r'},
+             'stable': {'a': "it's", 'b': 'q"r'},
+             'arrays': {},
+             'd': None,
+             'source': None}}
+
+
 def snapshot(text):
     p = ParsedFile("PKGBUILD", text)
-    return (
-        p.definitions,
-        dict(p.variables),
-        dict(p.stable_variables),
-        {k: (v.items, v.line, v.item_lines) for k, v in p.arrays.items()},
-        p.assignment_line("d"),
-        p.assignment_line("source"),
-    )
-
-
-@pytest.fixture
-def routes(monkeypatch):
-    def both(text):
-        monkeypatch.setattr(parsed, "USE_AST", True)
-        new = snapshot(text)
-        monkeypatch.setattr(parsed, "USE_AST", False)
-        return new, snapshot(text)
-    return both
+    return {
+        "definitions": [tuple(d) for d in p.definitions],
+        "variables": dict(p.variables),
+        "stable": dict(p.stable_variables),
+        "arrays": {k: (v.items, v.line, v.item_lines) for k, v in p.arrays.items()},
+        "d": p.assignment_line("d"),
+        "source": p.assignment_line("source"),
+    }
 
 
 @pytest.mark.parametrize("name", CASES)
-def test_same_as_text_route(routes, name):
-    new, old = routes(CASES[name])
-    assert new == old
+def test_same_as_the_recorded_text_route(name):
+    assert snapshot(CASES[name]) == EXPECTED[name]
 
 
 def test_array_items_and_lines():
@@ -84,25 +133,17 @@ def test_assignment_line_is_the_first_one():
     assert p.assignment_line("nothing") is None
 
 
-def test_unread_statement_falls_back_to_the_text_route(monkeypatch):
-    text = "a=1\nfi\nb=2\n"
-    p = ParsedFile("PKGBUILD", text)
-    assert p.ast.errors
-    assert p._tree is None
+def test_an_unread_statement_is_reported_and_the_rest_is_still_read():
+    p = ParsedFile("PKGBUILD", "a=1\nfi\nb=2\n")
+    assert p.ast.errors and 2 in p.unparsed_lines
     assert p.variables == {"a": "1", "b": "2"}
 
 
-def test_a_clean_file_uses_the_tree():
-    assert ParsedFile("PKGBUILD", "a=1\n")._tree is not None
+def test_local_counts_as_another_assignment():
+    """Stricter than the text route, which ignored `local d=...`: either value may apply."""
+    assert ParsedFile("PKGBUILD", "f() {\n  local d=/etc\n  d=/tmp\n}\n").stable_variables == {}
 
 
-def test_local_counts_as_another_assignment(routes):
-    """Deliberately stricter than the text route, which ignored `local d=...`: either value may apply."""
-    new, old = routes("f() {\n  local d=/etc\n  d=/tmp\n}\n")
-    assert new[2] == {} and old[2] == {"d": "/tmp"}
-
-
-def test_assignment_with_a_redirect_still_assigns(routes):
+def test_assignment_with_a_redirect_still_assigns():
     """The text route took `x=1 2>/dev/null` for a command; the shell does assign."""
-    new, old = routes("x=1 2>/dev/null\n")
-    assert new[1] == {"x": "1"} and old[1] == {}
+    assert ParsedFile("PKGBUILD", "x=1 2>/dev/null\n").variables == {"x": "1"}

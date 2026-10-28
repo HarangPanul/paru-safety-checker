@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from .fileaccess import classify_path, file_accesses
 from .heuristics import RULES, _applies, source_entries
 from .parsed import parse
-from .strict import Command, normalise, walk
+from .strict import Command, normalise
 
 NETWORK_RULE_IDS = frozenset({
     "build-time-download", "vcs-fetch", "dependency-fetch", "registry-install", "download-tool", "system-install",
@@ -72,7 +72,7 @@ def build_activity(files: dict) -> list[Activity]:
         parsed = parse(name, text)
         variables = parsed.variables
         counts: dict[str, list] = {}
-        for step in walk(parsed.pre):
+        for step in parsed.steps:
             network_lines = False
             for rule in _NETWORK_RULES:
                 if _applies(rule.scope, name) and rule.pattern.search(step.text):

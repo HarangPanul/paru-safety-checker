@@ -5,7 +5,7 @@ from paru_analyzer.activity import (
     Activity, build_activity, classify_path, file_accesses, format_activity, inventory_for_ai,
 )
 from paru_analyzer.heuristics import source_entries
-from paru_analyzer.strict import extract_commands
+from paru_analyzer.astadapt import flatten as extract_commands
 
 
 def accesses(line):

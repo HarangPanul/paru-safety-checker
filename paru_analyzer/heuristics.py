@@ -17,7 +17,7 @@ from urllib.parse import urlsplit
 from .fetch import TRUNCATED_MARKER
 from .models import Finding, worst
 from . import cmdrules, crosscheck
-from .parsed import ParsedFile, collect_arrays, definitions, expand, literal_variables, parse
+from .parsed import ParsedFile, expand, parse
 from .strict import scan_strict
 
 # Package / npm names from real incidents (Arch AUR notice, July 2025; npm payload campaign).
@@ -523,14 +523,12 @@ def _scan_toplevel(parsed: ParsedFile) -> list[Finding]:
     """Code outside any function runs when the file is merely sourced (e.g. by an AUR helper
     resolving dependencies), long before a build is approved."""
     findings: list[Finding] = []
-    for line in parsed.pre.lines:
-        if line.region != "top" or line.kind not in ("command", "control"):
-            continue
-        shown = line.text[:120]
-        if _TOP_DANGER.match(line.text):
-            findings.append(Finding("danger", f"Runs at parse time, outside any function: {shown}", parsed.name, line.number, "toplevel-exec"))
-        elif _TOP_CAUTION.match(line.text):
-            findings.append(Finding("caution", f"Runs at parse time, outside any function: {shown}", parsed.name, line.number, "toplevel-exec"))
+    for unit in parsed.toplevel_commands:
+        shown = unit.text[:120]
+        if _TOP_DANGER.match(unit.text):
+            findings.append(Finding("danger", f"Runs at parse time, outside any function: {shown}", parsed.name, unit.line, "toplevel-exec"))
+        elif _TOP_CAUTION.match(unit.text):
+            findings.append(Finding("caution", f"Runs at parse time, outside any function: {shown}", parsed.name, unit.line, "toplevel-exec"))
     return findings
 
 
@@ -763,7 +761,7 @@ def scan(files: dict[str, str], package: str | None = None) -> list[Finding]:
                 found += crosscheck.crosscheck(name, parsed.raw_text(), pre)
                 found += _scan_toplevel(parsed)
                 flagged_lines = {f.line for f in found if f.severity == "danger" or f.rule == "toplevel-exec"}
-                found += [f for f in scan_strict(name, pre) if f.line not in flagged_lines]
+                found += [f for f in scan_strict(name, parsed) if f.line not in flagged_lines]
             found += _file_gap(name)
         except Exception as exc:  # an analyzer bug or hostile input must never read as "nothing found"
             found.append(Finding("caution", f"The analyzer failed on this file ({type(exc).__name__}), so it was not fully reviewed", name, None, "analyzer-error"))

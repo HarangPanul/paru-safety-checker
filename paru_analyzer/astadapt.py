@@ -32,6 +32,41 @@ class Unit(NamedTuple):
     text: str
     top: bool                   # outside every function: runs when the file is merely parsed
     commands: tuple             # ((Command, line), ...)
+    heredoc: bool = False       # a command of the unit opens a here-document
+    code: bool = False          # a command that is not a plain declaration (`x=1`, `export`, `declare`, ...)
+    substituted: bool = False   # a substitution is run by the unit (its commands follow the main ones, `inside=True`)
+    ok: bool = True             # False for a statement the grammar could not read; `text` is then its source
+    function: str | None = None # the function it is defined in
+
+
+class Step(NamedTuple):
+    """One command of a PKGBUILD / install script, already understood (what strict.py and activity.py read)."""
+    line: int
+    text: str
+    top: bool                    # outside every function: runs when the file is merely parsed
+    in_function: bool
+    in_array: bool
+    toplevel_code: bool          # a top-level command that is not a plain declaration
+    commands: list               # commands inside functions
+    ok: bool                     # False for a statement the shell grammar could not read
+    parse_time: list             # commands inside substitutions that run at parse time
+    parse_time_substitution: bool
+    heredoc: bool                # the command opens a here-document
+
+
+def steps(units_: list) -> list[Step]:
+    """The steps of a file from its units. At the top level a command is not run by makepkg's parse (only
+    its substitutions are), so the commands of a top-level step are those inside substitutions."""
+    out = []
+    for unit in units_:
+        commands = [c for c, _ in unit.commands]
+        if unit.top:
+            inside = [c for c in commands if c.inside]
+            out.append(Step(unit.line, unit.text, True, False, False, unit.code and unit.ok, [], unit.ok, inside,
+                            unit.substituted, unit.heredoc))
+        else:
+            out.append(Step(unit.line, unit.text, False, True, False, False, commands, unit.ok, [], False, unit.heredoc))
+    return out
 
 
 class _Counter:
@@ -245,14 +280,32 @@ class _Collector:
         self.subs = []
 
 
-def _unit(node, line: int, top: bool) -> Unit:
+DECLARATIONS = frozenset({"export", "declare", "readonly", "unset", "typeset"})
+
+
+def _has_heredoc(node) -> bool:
+    return any(isinstance(r.target, HereDoc) for s in shast.walk(node) if isinstance(s, Simple) for r in s.redirects)
+
+
+def _is_declaration(node) -> bool:
+    """A command that only declares: `x=1`, `x=(..)`, `export X`, `declare -a y`, `unset z`."""
+    if isinstance(node, Statement):
+        node = node.node
+    if not isinstance(node, Simple):
+        return False
+    return not node.words or node.words[0].value in DECLARATIONS
+
+
+def _unit(node, line: int, top: bool, function: str | None = None) -> Unit:
     collector = _Collector(_Counter(), False)
     collector.statement(node)
+    substituted = bool(collector.subs)
     collector.drain()
-    return Unit(line, render(node), top, tuple((command, line) for command, _ in collector.found))
+    return Unit(line, render(node), top, tuple((command, line) for command, _ in collector.found),
+                _has_heredoc(node), not _is_declaration(node), substituted, True, function)
 
 
-def _header(words, redirects, text: str, line: int, top: bool) -> Unit | None:
+def _header(words, redirects, text: str, line: int, top: bool, function: str | None = None) -> Unit | None:
     """The substitutions in the part of a compound command that is not a statement (a `for` list, a
     `case` word, the target of a redirection): they run, so their commands are reported."""
     collector = _Collector(_Counter(), False)
@@ -265,7 +318,7 @@ def _header(words, redirects, text: str, line: int, top: bool) -> Unit | None:
     if not collector.subs:
         return None
     collector.drain()
-    return Unit(line, text, top, tuple((command, line) for command, _ in collector.found))
+    return Unit(line, text, top, tuple((command, line) for command, _ in collector.found), substituted=True, function=function)
 
 
 def units(script: Script) -> tuple[list[Unit], set[int]]:
@@ -281,40 +334,41 @@ def units(script: Script) -> tuple[list[Unit], set[int]]:
             for item in node.items:
                 visit(item, function)
         elif isinstance(node, (Simple, Pipeline)):
-            found.append(_unit(node, node.line, top))
+            found.append(_unit(node, node.line, top, function))
         elif isinstance(node, AndOr):
             visit(node.first, function)
             for _, operand in node.rest:
                 visit(operand, function)
         elif isinstance(node, (Group, Subshell)):
             visit(node.body, function)
-            _add(_header((), node.redirects, render(node), node.line, top))
+            _add(_header((), node.redirects, render(node), node.line, top, function))
         elif isinstance(node, If):
             for condition, body in node.branches:
                 visit(condition, function)
                 visit(body, function)
             if node.orelse is not None:
                 visit(node.orelse, function)
-            _add(_header((), node.redirects, render(node), node.line, top))
+            _add(_header((), node.redirects, render(node), node.line, top, function))
         elif isinstance(node, While):
             visit(node.condition, function)
             visit(node.body, function)
-            _add(_header((), node.redirects, render(node), node.line, top))
+            _add(_header((), node.redirects, render(node), node.line, top, function))
         elif isinstance(node, For):
-            _add(_header(node.items or (), node.redirects, render(node), node.line, top))
+            _add(_header(node.items or (), node.redirects, render(node), node.line, top, function))
             visit(node.body, function)
         elif isinstance(node, Case):
-            _add(_header([node.word, *(p for c in node.clauses for p in c.patterns)], node.redirects, render(node), node.line, top))
+            _add(_header([node.word, *(p for c in node.clauses for p in c.patterns)], node.redirects, render(node), node.line, top, function))
             for clause in node.clauses:
                 visit(clause.body, function)
         elif isinstance(node, FunctionDef):
             visit(node.body, node.name)
         elif isinstance(node, Conditional):
-            _add(_header(node.words, node.redirects, render(node), node.line, top))
+            _add(_header(node.words, node.redirects, render(node), node.line, top, function))
         elif isinstance(node, ArithCommand):
-            _add(_header((), node.redirects, render(node), node.line, top))
+            _add(_header((), node.redirects, render(node), node.line, top, function))
         elif isinstance(node, Unparsed):
             bad.update(range(node.line, node.end + 1))
+            found.append(Unit(node.line, node.text, top, (), ok=False, function=function))
 
     def _add(unit: Unit | None) -> None:
         if unit is not None:
@@ -333,3 +387,35 @@ def flatten(text: str) -> tuple[tuple, bool]:
         collector.statement(item.node)
     collector.drain()
     return tuple(command for command, _ in collector.found), result.ok
+
+
+def loose(text: str) -> tuple:
+    """The commands of a string that is not valid shell (the payload of `sh -c` can be anything): cut at the
+    operators and read each piece as one command. Used only when `flatten` could not parse the string."""
+    import shlex
+    try:
+        lexer = shlex.shlex(text.replace(r"\;", " __SEMI__ "), posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return ()
+    found: list[Command] = []
+    words: list[str] = []
+    piped = False
+    stage = 0
+
+    def flush(next_piped: bool) -> None:
+        nonlocal words, piped, stage
+        if words:
+            found.extend(c._replace(segment=stage) for c in _segment(words, piped))
+            stage += 1
+        words, piped = [], next_piped
+
+    for token in tokens:
+        if token and set(token) <= set(";&|()"):
+            flush(token in ("|", "|&"))
+        else:
+            words.append(token)
+    flush(False)
+    return tuple(found)

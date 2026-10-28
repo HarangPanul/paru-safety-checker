@@ -2,7 +2,8 @@
 import pytest
 
 from paru_analyzer.heuristics import level_of, scan
-from paru_analyzer.strict import extract_commands, scan_strict
+from paru_analyzer.astadapt import flatten as extract_commands
+from paru_analyzer.strict import scan_strict
 
 
 def names(text):

@@ -13,7 +13,6 @@ import shlex
 from typing import NamedTuple
 
 from .models import Finding
-from .preprocess import Preprocessed, preprocess
 
 BUILD_ALLOWED = frozenset("""
 cd pushd popd pwd echo printf true false : test export unset local declare readonly set shopt shift return exit
@@ -71,76 +70,6 @@ class Command(NamedTuple):
     redirects: tuple = ()  # ((operator, target), ...) for > >> < etc.; heredoc bodies are not files
     segment: int = 0       # commands of one pipeline stage share a number; a piped stage reads stage - 1
     inside: bool = False   # runs inside a `$(...)`, `<(...)` or backtick substitution
-
-
-def _match_paren(s: str, i: int) -> int:
-    """Index of the ')' closing the '(' just before s[i], skipping quotes; len(s) if unbalanced."""
-    depth, quote = 1, ""
-    while i < len(s):
-        c = s[i]
-        if quote:
-            if c == "\\" and quote == '"':
-                i += 1
-            elif c == quote:
-                quote = ""
-        elif c in "'\"":
-            quote = c
-        elif c == "\\":
-            i += 1
-        elif c == "(":
-            depth += 1
-        elif c == ")":
-            depth -= 1
-            if depth == 0:
-                return i
-        i += 1
-    return len(s)
-
-
-def strip_substitutions(s: str) -> tuple[str, list[str]]:
-    """Replace $(...), `...`, <(...) and >(...) by a placeholder; return the inner command strings."""
-    out: list[str] = []
-    subs: list[str] = []
-    i, quote = 0, ""
-    while i < len(s):
-        c = s[i]
-        if c == "\\" and quote != "'":
-            out.append(s[i:i + 2])
-            i += 2
-            continue
-        if quote == "'":
-            out.append(c)
-            if c == "'":
-                quote = ""
-            i += 1
-            continue
-        if c == "'" and not quote:
-            quote = "'"
-        elif c == '"':
-            quote = "" if quote == '"' else '"'
-        elif s.startswith("$((", i):
-            end = _match_paren(s, i + 2)
-            subs.extend(strip_substitutions(s[i + 3:end])[1])
-            out.append("0")
-            i = end + 2
-            continue
-        elif s.startswith("$(", i) or (not quote and s[i:i + 2] in ("<(", ">(")):
-            start = i + 2
-            end = _match_paren(s, start)
-            subs.append(s[start:end])
-            out.append("__SUB__")
-            i = end + 1
-            continue
-        elif c == "`":
-            end = s.find("`", i + 1)
-            end = len(s) if end < 0 else end
-            subs.append(s[i + 1:end])
-            out.append("__SUB__")
-            i = end + 1
-            continue
-        out.append(c)
-        i += 1
-    return "".join(out), subs
 
 
 def _xargs_target(args: list[str]) -> list[str]:
@@ -201,121 +130,6 @@ def _segment(words: list[str], piped: bool) -> list[Command]:
         for target in _find_targets(last.args):
             commands.extend(_segment(target, False))
     return commands
-
-
-MAX_NESTING = 30
-
-
-_OPERATORS = sorted(SEGMENT_OPS | REDIRECTS, key=len, reverse=True)
-_PUNCTUATION = frozenset("();<>|&")
-
-
-def _split_operators(tokens: list[str]) -> list[str]:
-    """shlex joins neighbouring punctuation (`);`, `)|`, `;;)`) into one token; cut it into the shell operators."""
-    out: list[str] = []
-    for token in tokens:
-        if len(token) < 2 or token in SEGMENT_OPS or token in REDIRECTS or not set(token) <= _PUNCTUATION:
-            out.append(token)
-            continue
-        rest = token
-        while rest:
-            op = next((o for o in _OPERATORS if rest.startswith(o)), rest[0])
-            out.append(op)
-            rest = rest[len(op):]
-    return out
-
-
-def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = None) -> tuple[list[Command], bool]:
-    """Every simple command in `text`, including those inside substitutions. ok=False if unparseable
-    (including nesting deeper than MAX_NESTING, which only an attacker writes)."""
-    if _depth > MAX_NESTING:
-        return [], False
-    stages = _stages if _stages is not None else [0]
-    text = text.replace(r"\;", " __SEMI__ ")
-    outer, subs = strip_substitutions(text)
-    outer = re.sub(r"\(\([^()]*\)\)", " ", outer)
-    try:
-        lexer = shlex.shlex(outer, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
-        return [], False
-
-    tokens = _split_operators(tokens)
-    commands: list[Command] = []
-    segments: list[tuple[list[str], bool, list[tuple[str, str]]]] = []
-    current: list[str] = []
-    redirects: list[tuple[str, str]] = []
-    seg_piped = False
-    open_parens = 0
-    groups: list[bool] = []         # one entry per open `(` / `{`: did a pipe feed it? Everything inside reads that pipe
-    pending_op: str | None = None
-    array_depth = 0                 # inside the (...) of `name=(...)`: those words are values, not commands
-    for token in tokens:
-        if array_depth:
-            array_depth += (token == "(") - (token == ")")
-            continue
-        if token == "(" and current and re.fullmatch(r"[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=", current[-1]):
-            array_depth = 1
-            continue
-        if token in SEGMENT_OPS:
-            if token == ")" and open_parens == 0:
-                # a case pattern like `x86_64)` or `a|b)`: not a command
-                if current and seg_piped:
-                    while segments and segments[-1][1]:
-                        segments.pop()
-                    if segments:
-                        segments.pop()
-                current, redirects = [], []
-                seg_piped = False
-                continue
-            if token == "(":
-                open_parens += 1
-                groups.append(seg_piped and not current)
-            elif token == ")":
-                open_parens -= 1
-                if groups:
-                    groups.pop()
-            if current or redirects:
-                segments.append((current, seg_piped, redirects))
-            current, redirects = [], []
-            seg_piped = token in ("|", "|&") or (any(groups) and token != ")")
-            continue
-        if token in REDIRECTS:
-            pending_op = token
-            if current and current[-1].isdigit():
-                current.pop()
-            continue
-        if pending_op is not None:
-            if pending_op not in ("<<", "<<-") and not re.fullmatch(r"\d+|-", token):
-                redirects.append((pending_op, token))
-            pending_op = None
-            continue
-        if not current:
-            if token == "{":
-                groups.append(seg_piped)
-            elif token == "}" and groups:
-                groups.pop()
-        current.append(token)
-    if current or redirects:
-        segments.append((current, seg_piped, redirects))
-
-    ok = True
-    for words, piped, segment_redirects in segments:
-        found = _segment(words, piped)
-        if segment_redirects:
-            if found:
-                found[0] = found[0]._replace(redirects=tuple(segment_redirects))
-            else:
-                found = [Command(":", [], piped, tuple(segment_redirects))]
-        commands.extend(c._replace(segment=stages[0]) for c in found)
-        stages[0] += 1
-    for inner in subs:
-        inner_commands, inner_ok = extract_commands(inner, _depth + 1, stages)
-        commands.extend(c._replace(inside=True) for c in inner_commands)
-        ok = ok and inner_ok
-    return commands, ok
 
 
 def _normalise(name: str) -> str:
@@ -379,68 +193,16 @@ def classify(command: Command, allowed: frozenset[str], local_functions: set[str
     return "unknown-command", f"Command not on the allowlist (default-deny): {name}"
 
 
-class Step(NamedTuple):
-    """One command of a PKGBUILD / install script, already understood."""
-    line: int
-    text: str
-    top: bool                    # outside every function: runs when the file is merely parsed
-    in_function: bool
-    in_array: bool
-    toplevel_code: bool          # a top-level command that is not a plain declaration
-    commands: list               # commands inside functions
-    ok: bool                     # False if the shell could not be parsed
-    parse_time: list             # commands inside substitutions that run at parse time
-    parse_time_substitution: bool
-    heredoc: bool                # the command opens a here-document
-
-
-ALLOWED_AT_TOP = re.compile(r"^(?:(?:export|declare|readonly|unset)\b|[A-Za-z_]\w*\+?=|\{|\}|\))")
-
-
-def _substitution_commands(text: str) -> tuple[list[Command], bool]:
-    _, subs = strip_substitutions(text)
-    found: list[Command] = []
-    for inner in subs:
-        found.extend(extract_commands(inner)[0])
-    return found, bool(subs)
-
-
-def walk(source):
-    """Steps of a file, from its preprocessed lines (a str is preprocessed first)."""
-    pre = source if isinstance(source, Preprocessed) else preprocess(source)
-    for line in pre.lines:
-        if line.kind in ("heredoc-end", "case-pattern", "function"):
-            continue
-        top = line.region == "top"
-        if line.kind == "heredoc":
-            # An unquoted here-document is expanded by the shell: $(...) and `...` in it run.
-            if line.expands and ("$(" in line.text or "`" in line.text):
-                found, _ = _substitution_commands(line.text)
-                yield Step(line.number, line.text, top, not top, False, False, [] if top else found, True,
-                           found if top else [], top, False)
-            continue
-        toplevel_code = top and line.kind in ("command", "control") and not ALLOWED_AT_TOP.match(line.text)
-        parse_time: list[Command] = []
-        has_sub = False
-        if top:
-            parse_time, has_sub = _substitution_commands(line.text)
-        commands: list[Command] = []
-        ok = True
-        if not top:
-            commands, ok = extract_commands(line.text)
-        yield Step(line.number, line.text, top, not top, False, toplevel_code, commands, ok, parse_time, has_sub,
-                   bool(HEREDOC.search(line.text)))
-
-
 def normalise(name: str) -> str:
     return _normalise(name)
 
 
 def scan_strict(name: str, source) -> list[Finding]:
-    """`source` is the script text, or its Preprocessed form."""
+    """`source` is a ParsedFile, or the script text."""
+    from .parsed import parse                       # parsed.py imports this module
+    parsed = parse(name, source)
     allowed = HOOK_ALLOWED if name.endswith(".install") else BUILD_ALLOWED
-    pre = source if isinstance(source, Preprocessed) else preprocess(source)
-    local_functions = {m.group(1) for l in pre.lines if l.kind == "function" and (m := re.match(r"^([^\s()]+)", l.text))}
+    local_functions = parsed.function_names
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
 
@@ -449,7 +211,7 @@ def scan_strict(name: str, source) -> list[Finding]:
             seen.add((rule, key))
             findings.append(Finding("caution", message, name, line, rule))
 
-    for step in walk(pre):
+    for step in parsed.steps:
         shown = step.text[:100]
         if step.toplevel_code:
             add("toplevel-code", f"Code outside any function runs when the file is merely parsed: {shown}", step.line, str(step.line))

@@ -9,7 +9,7 @@ from paru_analyzer import cmdrules, heuristics
 from paru_analyzer.heuristics import RULES, scan, source_entries
 from paru_analyzer.invocation import reads_program_from_stdin, views
 from paru_analyzer.parsed import ParsedFile
-from paru_analyzer.strict import extract_commands
+from paru_analyzer.astadapt import flatten as extract_commands
 
 
 def run(line, name="PKGBUILD"):
@@ -398,6 +398,6 @@ def test_array_literals_inside_functions_are_values_not_commands(line):
 
 
 def test_neighbouring_punctuation_is_split_into_operators():
-    from paru_analyzer.strict import extract_commands
+    from paru_analyzer.astadapt import flatten as extract_commands
     assert [c.name for c in extract_commands("a=(1 2); make")[0]] == ["make"]
     assert [(c.name, c.piped) for c in extract_commands("(ls)|tee f")[0]] == [("ls", False), ("tee", True)]
