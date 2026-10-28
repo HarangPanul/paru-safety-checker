@@ -283,8 +283,8 @@ def format_report(report: dict) -> str:
         count = report["levels"][level]
         lines.append(f"  {level:8} {count:5}  ({100 * count / total:.1f}%)")
     lines.append("")
-    lines.append("rules by affected packages (warning first; each hit is a presumed false positive):")
-    ordered = sorted(report["rules"].items(), key=lambda kv: (("warning", "info").index(kv[1]["severity"]), -len(kv[1]["packages"])))
+    lines.append("rules by affected packages (warning first, facts last; each hit is a presumed false positive):")
+    ordered = sorted(report["rules"].items(), key=lambda kv: (("warning", "info", "fact").index(kv[1]["severity"]), -len(kv[1]["packages"])))
     for rule, entry in ordered:
         lines.append(f"  [{entry['severity']}] {rule}: {len(entry['packages'])} packages, {entry['findings']} findings")
         lines.extend(f"      {example}" for example in entry["examples"])

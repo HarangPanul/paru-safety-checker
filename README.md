@@ -153,14 +153,17 @@ python -m paru_analyzer.ir data/targets/benign/some-package   # PKGBUILD가 있�
 
 남아 있는 한계와 미해결 항목은 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)에 기록해 두었습니다.
 
-### 검토하지 못한 것과 외부에서 들여오는 것은 항상 경고
+### 사실(fact)과 표시(mark)
 
-미탐보다 오탐이 낫다는 원칙으로, 정상 여부와 상관없이 아래는 모두 `info`(설치 전 확인)입니다.
+도구가 내놓는 정보는 두 종류입니다. **표시**는 규칙이 "여기를 읽어 보세요"라고 가리키는 것이라 단계(`info`/`warning`)를 올립니다.
+**사실**은 패키지가 원래 그렇게 생겼다는 설명이라 `[fact]`로 표시 아래에 보여 주기만 하고 단계는 올리지 않습니다.
+사실만 있는 패키지는 `[clear]`이며, 이때 `clear`는 안전하다는 뜻이 아니라 표시된 위험이 없다는 뜻입니다(설치 전 확인은 그대로 합니다).
 
-- 검토하지 못한 파일: 바이너리(PNG 포함), 읽을 수 없는 파일, 크기 제한으로 잘린 파일·누락된 파일, 심볼릭 링크, git submodule
-- `source`의 모든 원격 URL(https·체크섬 유무와 무관), 고정되지 않은 VCS 소스, 변수라서 해석할 수 없는 소스
-- 빌드 중 의존성을 내려받는 도구: go / cargo / npm·pnpm·yarn / pip·`python -m build`(격리 빌드) / gem / maven·gradle / dotnet 등
-- 빌드 중 `git clone`·`git fetch`, `curl`/`wget`, 설치 도구(`pacman -S`, `docker pull` 등)
+- 사실: `source`의 원격 URL(`external-source`), 고정되지 않은 VCS 소스(`unpinned-vcs`), 빌드된 바이너리·설치 파일 소스(`prebuilt-source`),
+  저장소의 바이너리(`binary-in-repo`)와 `PKGBUILD`·`.install`이 아닌 심볼릭 링크(`symlink`)
+- 표시로 남는 것: 읽지 못한 스크립트·알 수 없는 파일(`unanalyzed-file`), 크기 제한으로 잘린 파일, `PKGBUILD`·`.install`의 심볼릭 링크,
+  git submodule, 변수라서 해석할 수 없는 소스, 안전하지 않은 프로토콜 소스, 체크섬 건너뛰기
+- 빌드 중 의존성을 내려받는 도구(go / cargo / npm·pnpm·yarn / pip / gem / maven·gradle / dotnet 등), 빌드 중 `git clone`·`curl`/`wget`·설치 도구
 - 공식 저장소에 없는 의존성: paru가 AUR에서 받아 빌드하지만 `paru-analyzer`가 검토하지 않으므로, 명령줄에 직접 적어야 검토됩니다.
 
 ## 규칙 기반 검사의 오탐 측정

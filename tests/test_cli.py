@@ -286,3 +286,12 @@ def test_colour_only_on_a_terminal_and_never_with_no_color(monkeypatch):
     assert report.label("info") == "\033[38;5;208m[! info]\033[0m"
     monkeypatch.setenv("NO_COLOR", "1")
     assert report.label("info") == "[! info]"
+
+
+def test_facts_are_listed_after_the_marks_and_do_not_change_the_label():
+    from paru_analyzer.models import Finding, Verdict
+    from paru_analyzer.report import format_verdict
+    text = format_verdict("pkg", Verdict("clear", "x", [Finding("fact", "External source", "PKGBUILD", 5, "external-source"),
+                                                          Finding("info", "odd", "PKGBUILD", 3, "sudo")]))
+    lines = text.splitlines()
+    assert lines[0].startswith("[clear] ") and "[! info]" in lines[1] and "[fact]" in lines[2]

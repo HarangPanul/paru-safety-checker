@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 LEVELS = ("clear", "info", "warning")
+# A fact is not a level. It states how the package is built ("the source comes from github.com and was not
+# reviewed") without saying the package is risky, so it is shown but never raises the level, and the AI cannot
+# report one (the schema below only offers LEVELS).
+FACT = "fact"
 
 VERDICT_SCHEMA = {
     "type": "object",
