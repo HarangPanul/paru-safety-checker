@@ -11,8 +11,8 @@ install hooks, code that runs on parse, commands). Still missing:
   function (`prepare`/`build`/`check`/`package`) does;
 - an AI-written summary that may only restate parsed facts, with a source line for every sentence, and a
   visible list of what it could not cover (parse failures, truncated files, run-time command names);
-- changing the "no findings, install immediately" path: with this goal, silence is not a verdict, so the
-  default may need to show the summary even when nothing is marked.
+- the "nothing marked" path now asks `[y/N]` before installing (done); whether it should also show the
+  summary there by default is still open.
 
 ### Judging what the downloaded sources do
 

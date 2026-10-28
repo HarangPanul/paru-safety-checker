@@ -61,9 +61,23 @@ def test_non_install_passthrough_does_not_analyze():
     assert (code, ran, provider.calls) == (0, [["-Ss", "foo"]], [])
 
 
-def test_safe_installs_without_prompt():
-    code, ran = run(["-S", "foo"], FakeProvider(safe))
-    assert (code, ran) == (0, [["-S", "foo"]])
+def test_nothing_marked_still_asks_before_installing(capsys):
+    assert run(["-S", "foo"], FakeProvider(safe), answers=["n"]) == (1, [])
+    assert run(["-S", "foo"], FakeProvider(safe), answers=[""]) == (1, [])
+    assert run(["-S", "foo"], FakeProvider(safe), answers=["y"]) == (0, [["-S", "foo"]])
+    assert "does not mean the package is safe" not in capsys.readouterr().err   # said in the prompt, not the report
+
+
+def test_no_answer_available_does_not_install(capsys):
+    def eof(prompt):
+        raise EOFError
+    assert main(["-S", "foo"], provider=FakeProvider(safe), fetcher=lambda p: {"PKGBUILD": "pkgname=x"},
+                in_repo=lambda p: False, runner=lambda a: 0, ask=eof) == 1
+
+
+def test_one_question_covers_several_packages():
+    code, ran = run(["-S", "foo", "bar"], FakeProvider(safe), answers=["y"])
+    assert (code, ran) == (0, [["-S", "foo", "bar"]])
 
 
 def test_repo_package_skipped():
@@ -177,13 +191,13 @@ def test_dependencies_named_on_the_command_line_are_reviewed_not_warned_about():
 
     spy = Spy()
     files = {"PKGBUILD": "pkgname=foo\ndepends=('aur-lib')\n"}
-    code, ran = run(["-S", "foo", "aur-lib"], spy, files=files, dep_ok=lambda d: False)
+    code, ran = run(["-S", "foo", "aur-lib"], spy, answers=["y"], files=files, dep_ok=lambda d: False)
     assert (code, ran) == (0, [["-S", "foo", "aur-lib"]])
     assert spy.calls == [("foo", []), ("aur-lib", [])]
 
 
 def test_all_dependencies_in_official_repos_do_not_add_a_warning():
-    assert run(["-S", "foo"], FakeProvider(safe), files=WITH_DEPS, dep_ok=lambda d: True) == (0, [["-S", "foo"]])
+    assert run(["-S", "foo"], FakeProvider(safe), answers=["y"], files=WITH_DEPS, dep_ok=lambda d: True) == (0, [["-S", "foo"]])
 
 
 def test_a_package_with_a_remote_source_always_asks_the_user():
@@ -242,9 +256,9 @@ def test_the_ai_receives_the_inventory():
 
 def test_verbose_lists_routine_operations(capsys):
     files = {"PKGBUILD": "pkgname=foo\npackage() {\n  install -Dm755 foo \"$pkgdir/usr/bin/foo\"\n}\n"}
-    run(["-S", "foo"], FakeProvider(safe), files=files)
+    run(["-S", "foo"], FakeProvider(safe), answers=["y"], files=files)
     assert "not listed; use --safe-verbose" in capsys.readouterr().err
-    run(["-S", "foo", "--safe-verbose"], FakeProvider(safe), files=files)
+    run(["-S", "foo", "--safe-verbose"], FakeProvider(safe), answers=["y"], files=files)
     assert "write $pkgdir/usr/bin/foo" in capsys.readouterr().err
 
 

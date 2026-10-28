@@ -76,6 +76,7 @@ def main(
 
     level = "safe"
     unchecked: list[str] = []
+    reviewed = False
     for package in targets:
         if "/" in package or in_repo(package):
             continue  # explicit repo/pkg or official repo package: not an AUR build
@@ -88,6 +89,7 @@ def main(
         if files is None:
             continue  # not an AUR package; paru will report it
 
+        reviewed = True
         static = scan(files, package) + _dependency_findings(package, files, targets, dep_ok)
         activities = build_activity(files)
         _err(format_activity(package, activities, verbose))
@@ -107,7 +109,8 @@ def main(
         _err(format_verdict(package, verdict))
         level = worst(level, verdict.level)
 
-    # Nothing is ever refused: the user is warned and chooses. Riskier states need a typed "yes".
+    # Nothing is ever refused: the user sees the report and chooses, even when nothing was marked (silence is
+    # not a verdict). Riskier states need a typed "yes".
     if unchecked:
         _err(f"[paru-safe] NOT fully reviewed: {', '.join(unchecked)}")
     if unchecked or level == "danger":
@@ -118,6 +121,8 @@ def main(
     elif level == "caution":
         if not _confirm(ask, "Review the findings above. Continue? [y/N] "):
             return 1
+    elif reviewed and not _confirm(ask, "Nothing was marked, which does not mean the package is safe. Install? [y/N] "):
+        return 1
     return runner(args)
 
 
