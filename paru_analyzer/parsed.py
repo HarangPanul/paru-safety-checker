@@ -41,6 +41,7 @@ class ParsedCommand(NamedTuple):
     stage_map: dict | None = None   # segment -> commands, built once per line and shared by its commands
     end: int = 0                    # last line of the statement
     parent: Command | None = None   # the command whose `sh -c` / `eval` string this one came from
+    function: str | None = None     # the function it is written in (None: top level)
 
     def upstream(self) -> list[Command]:
         """Commands of the earlier stages of the pipeline this command receives its input from."""
@@ -182,7 +183,8 @@ def collect_arrays(defs, overridden: list | None = None) -> dict[str, Array]:
 MAX_PAYLOAD_DEPTH = 4
 
 
-def _emit(commands: tuple, text: str, top: bool, out: list, depth: int, end: int = 0, parent: Command | None = None) -> None:
+def _emit(commands: tuple, text: str, top: bool, out: list, depth: int, end: int = 0, parent: Command | None = None,
+          function: str | None = None) -> None:
     """Add the commands of one unit as ParsedCommands, then the commands inside any `sh -c STR` /
     `eval STR` they start. `commands` is ((Command, line), ...)."""
     plain = tuple(command for command, _ in commands)
@@ -190,7 +192,7 @@ def _emit(commands: tuple, text: str, top: bool, out: list, depth: int, end: int
     for command in plain:
         stage_map.setdefault(command.segment, []).append(command)
     for command, line in commands:
-        out.append(ParsedCommand(command, line, text, top, plain, stage_map, end, parent))
+        out.append(ParsedCommand(command, line, text, top, plain, stage_map, end, parent, function))
     if depth >= MAX_PAYLOAD_DEPTH:
         return
     for command, line in commands:
@@ -201,7 +203,7 @@ def _emit(commands: tuple, text: str, top: bool, out: list, depth: int, end: int
                 if not ok:                           # not valid shell: read what can be read, loosely
                     inner = astadapt.loose(payload_text) or inner
                 if inner:
-                    _emit(tuple((c, line) for c in inner), text, top, out, depth + 1, end, command)
+                    _emit(tuple((c, line) for c in inner), text, top, out, depth + 1, end, command, function)
 
 
 class ParsedFile:
@@ -280,7 +282,7 @@ class ParsedFile:
     def _analysis(self) -> tuple:
         out: list[ParsedCommand] = []
         for unit in self._units[0]:
-            _emit(unit.commands, unit.text, unit.top, out, 0, unit.end)
+            _emit(unit.commands, unit.text, unit.top, out, 0, unit.end, None, unit.function)
         return tuple(out), self._units[1]
 
     @cached_property
@@ -311,6 +313,17 @@ class ParsedFile:
     def function_names(self) -> frozenset:
         """Functions the file defines: calling one is not running an unknown program."""
         return frozenset(self.function_definitions)
+
+    @cached_property
+    def function_roles(self) -> dict:
+        """function name -> frozenset of roles it runs in (roles.py); nothing reads this yet."""
+        from . import roles
+        return roles.function_roles(self)
+
+    def roles_of(self, function: str | None) -> frozenset:
+        """The roles of code written in `function` (None: the top level)."""
+        from . import roles
+        return roles.roles_of(self, function)
 
     @cached_property
     def toplevel_commands(self) -> tuple:
