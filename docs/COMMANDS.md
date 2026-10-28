@@ -1,6 +1,7 @@
 # 명령 표와 이름 해석 설계 (초안)
 
-> 상태: **초안, 아직 구현 없음.** 형식은 나중에 바꾸기 어려우므로 구현 전에 이 문서로 먼저 정합니다.
+> 상태: **1단계 구현됨**(표 읽기·점검·예시 시험: `commandtable.py`, 데이터: `commandtable_data.py`). 아직 `strict.py` 등 어디에서도 쓰지 않으므로 동작은 그대로입니다. 2~6단계는 구현 전입니다.
+> 확인: `python -m paru_analyzer.commandtable --check`(점검과 예시 실행), `--show 이름`(한 명령이 표에 어떻게 적혀 있는지).
 > 관련: `strict.py`(지금의 허용 목록), `ir.py`(`ops`와 `area`), `docs/IR.md`, `docs/ROADMAP.md`의 접근 위치 분석.
 
 ## 목적
@@ -54,13 +55,20 @@ sudo, env, time, xargs   exec=@cmd
 ```
 
 ### 규칙
-1. **적히지 않은 옵션은 "효과 불명"이다.** 무시하지 않습니다. 표가 불완전해도 안전한 쪽으로 틀리게 하기 위해서입니다. 항목은 자기가 다루는 옵션 범위를 `covers=`로 적을 수 있고, 범위 밖의 옵션이 오면 불명으로 처리합니다.
-2. **계열과 별칭.** `gmake`는 `make`의 별칭, 압축 도구·컴파일러는 계열 하나를 상속합니다.
+1. **적히지 않은 옵션은 "효과 불명"이다.** 무시하지 않습니다. 표가 불완전해도 안전한 쪽으로 틀리게 하기 위해서입니다. 항목은 자기가 이해하는 옵션을 `covers:`로 적어야 하고(옵션이 효과를 바꾸지 않으면 `covers: *`), 범위 밖의 옵션이 오면 `unknown <옵션>` 효과가 나옵니다.
+2. **묶음과 상속.** 한 항목에 이름을 쉼표로 여러 개 적을 수 있고(`gmake`는 `make`와 같은 항목), `@이름` 항목은 명령이 아닌 템플릿이며 `like: 이름`으로 효과·옵션·`where`를 물려받습니다(압축 도구, 컴파일러, 감싸는 명령 등).
 3. **감싸는 명령**(`sudo`, `env`, `time`, `xargs`, `nohup`)은 특별 처리하지 않고 `exec=@cmd`로 적습니다. 지금 코드의 `BENIGN_WRAPPERS`/`STOP_WRAPPERS`/`views()`가 이 표로 합쳐집니다.
-4. **맥락별 차이**는 항목에 `hook:`로 덧씁니다(설치 훅에서는 `sed -i`를 `system`으로 본다 등). 정책에 쓸 값을 바꾸는 게 아니라 효과 자체가 다를 때만 씁니다.
+4. **어느 스크립트의 보통 단계인가**는 `where: build hook`으로 적습니다(기본은 `build`, 즉 PKGBUILD). 설치 훅 전용 명령(`systemctl`, `ldconfig`)은 `where: hook`입니다. 맥락 때문에 효과 자체가 달라지는 경우는 아직 없어서 따로 적는 문법이 없습니다.
 5. 항목마다 `ex:`가 1개 이상 있어야 하고, 모든 `ex:`는 자동으로 시험됩니다.
-6. **점검 도구**(`python -m paru_analyzer.commands --check`): 중복, `note` 누락, 예시 누락, 알 수 없는 어휘, 정렬을 확인합니다.
+6. **점검 도구**(`python -m paru_analyzer.commandtable --check`): 중복, `note`·`covers`·효과·예시 누락, 알 수 없는 어휘와 조건, 예시가 맞는지를 확인합니다(정렬은 보지 않습니다).
 7. 표에 버전을 붙이고 IR에 남깁니다(결과 재현용).
+
+## 구현된 형식 (1단계)
+- **필드**: `covers:`(필수) `valued:`(값을 받는 옵션) `subs:`(아는 하위 명령) `like:` `where:` `single-dash-long: yes`(`find`처럼 `-name`이 옵션 하나) `mode-first: yes`(`chmod -x f`처럼 첫 단어가 `-`로 시작하는 모드) `bundled-first: yes`(`tar xf a`처럼 대시 없는 옵션 묶음) `effects: none` `ex:` `note:`(필수), 그리고 `종류 = 대상 [조건]` 줄.
+- **대상**: `@none` `@args`(`[:-1]` `[-1]` `[1:]` `[0]`) `@opt(-o|--output)` `@url` `@script` `@cmd` `@stdin` `@tree`(소스·빌드 트리) `@deps`(의존성) `@find-paths` `@find-exec`, `system`·`spawn`은 단어(`system = users`).
+- **조건**(`[...]`, 안의 항목은 모두 만족해야 함): `-i|--in-place*` 플래그가 있을 때, `!-n` 없을 때, `sub:clone|fetch` 하위 명령, `?이름` 술어(`sed-active` `awk-active` `tar-exec` `git-config-exec` `inline-code` `piped` `pacman-write` `shopt-expand-aliases`; 기존 `strict.py`의 검사를 이름으로 부르는 것이며, 표에 코드를 쓰지 않기 위한 장치입니다).
+- **예시**: `ex: 명령줄 => read a; write b`, 표준입력으로 받는 경우는 `ex: | python => exec stdin`. 효과가 없으면 `none`.
+- **한계**: `@tree`는 "소스·빌드 트리 어딘가"이고 구체 경로가 아닙니다. 위치(`area`)에 따른 판정은 정책 단계(5단계)에서 합니다. 효과가 여러 개일 때 "하나라도 일어날 수 있다"는 보수적 합집합입니다.
 
 ## 실행 맥락: 명령이 어느 함수에 있는가
 같은 효과도 **언제, 누구 권한으로 실행되는가**에 따라 정상이기도 하고 위험하기도 합니다. 예를 들어 `useradd`나 `systemctl enable`(`system` 효과)은 `post_install()`에서는 흔하지만 `build()`나 `package()`에 있으면 빌드가 시스템을 건드리는 것이므로 위험합니다. 인자에 따라 효과 자체가 갈리는 명령도 있습니다(`makepkg -i`는 설치까지 하므로 `system`, `-i`가 없으면 빌드만이라 `system`이 아닙니다. `pacman -S`와 `-Q`도 마찬가지). 그래서 표(인자 → 효과)와 별개로 **명령이 있는 함수의 역할**을 정책의 입력에 넣습니다.
