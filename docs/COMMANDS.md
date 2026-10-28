@@ -71,9 +71,9 @@ sudo, env, time, xargs   exec=@cmd
 | `build` | `prepare()`, `build()`, `check()` | 일반 사용자, 빌드 중 |
 | `package` | `package()`, `package_<이름>()` | fakeroot 안의 일반 사용자, 패키지 만들 때 |
 | `hook` | `.install`의 `pre_install`, `post_install`, `pre_upgrade`, `post_upgrade`, `pre_remove`, `post_remove` | **root, 실제 시스템**, 설치·제거 때 |
-| `unknown` | 호출되는 곳을 알 수 없는 함수 | 가장 엄격한 쪽(`build`)으로 봄 |
+| `unknown` | 호출되는 곳을 알 수 없는 함수 | **어느 역할에서 실행될지 모르므로 모든 역할을 동시에 가정** (아래 정책 참고) |
 
-- 보조 함수는 **호출 그래프**로 역할을 정합니다. `_setup()`을 `build()`와 `post_install()`이 모두 부르면 두 역할의 합집합입니다. 어디서도 부르지 않는 함수는 `unknown`입니다.
+- 보조 함수는 **호출 그래프**로 역할을 정합니다. `_setup()`을 `build()`와 `post_install()`이 모두 부르면 두 역할의 합집합입니다. 어디서도 부르지 않는 함수는 `unknown`입니다. 호출이 `eval`이나 변수로 이뤄져서 따라갈 수 없는 경우도 `unknown`입니다.
 - `IR`의 단위가 이미 `runs`(`as-user`, `as-root-on-install`, `at-parse`)를 가지고 있으므로, 이 역할은 `runs`를 세분화한 것입니다.
 
 ## 정책 (표와 분리)
@@ -91,6 +91,7 @@ sudo, env, time, xargs   exec=@cmd
 | `system` | 우려 | **우려** (빌드가 시스템 상태를 바꾸면 안 됨) | 통과하되 기존 규칙(`user-management`, `kernel-module`, `systemd` 등)이 표시 |
 | `spawn` | 우려 | 우려 | 우려 |
 
+- **`unknown`은 `build`보다 더 엄격합니다.** 명령이 모든 역할(`parse`, `build`, `package`, `hook`)에서 통과할 때만 통과합니다. 한 역할에서라도 우려이면 우려입니다. 예를 들어 `hook`에서만 허용되는 `system`도, `build`에서만 허용되는 "소스 안 프로그램 실행(expected)"도 `unknown` 함수에서는 허용되지 않습니다. `unknown` 함수가 있다는 사실 자체도 표시합니다(`unreachable-function`, 우려 아님, `expected`: 호출되지 않는 함수는 보통 오래된 코드이거나 `eval`로 불리는 함수입니다).
 - 즉 `system`은 `hook`에서는 "정상적인 설치 동작이라 표시만", `build`/`package`/`parse`에서는 우려입니다. 인자 때문에 효과가 갈리는 경우(`makepkg -i`, `pacman -S`)는 표가 `system`으로 적고, 정책이 역할로 판정합니다.
 - 이 표는 시작점이며, 실제 값은 `measure`로 오탐과 미탐을 보면서 조정합니다.
 
