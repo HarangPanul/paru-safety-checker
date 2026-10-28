@@ -32,8 +32,8 @@ Suggested first steps:
 3. Only for closed steps, emit the non-access list; map everything onto `effects` and `gaps` in `docs/IR.md`.
 
 ## Other recorded items
-- Move the remaining old-route readers to the syntax tree: arrays and variables (`definitions`,
-  `literal_variables`), regex input lines (`units`), `strict.py`, the `activity.py` step list; then remove
+- Move the remaining old-route readers to the syntax tree (arrays and variables are done; they fall back to the
+  text route when the tree has an unread statement): regex input lines (`units`), `strict.py`, the `activity.py` step list; then remove
   `Group`/`feeding`/`_split_operators` and `parsed.USE_AST`.
 - Validate the parser and adapter on the real 500-package corpus (parse failure rate, agreement with `bash -n`,
   old/new route differences).

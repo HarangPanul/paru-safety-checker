@@ -156,6 +156,50 @@ def literal_variables(pre: Preprocessed) -> dict[str, str]:
     return found
 
 
+def _assignments(tree) -> list:
+    """Every statement that only assigns (`a=1 b=2`, `x=(..)`), in file order, outside substitutions and pipelines (an assignment in a pipe runs in a subshell and is lost). A
+    `local`/`declare` line is a command, not an assignment, as in the text route."""
+    return [c.node for c in shast.simple_commands(tree.script) if not c.substitution and c.stages == 1 and c.node.assigns and not c.node.words]
+
+
+def definitions_from_tree(tree) -> list[Definition]:
+    found = []
+    for node in _assignments(tree):
+        for a in node.assigns:
+            if a.array is not None and a.index is None:
+                found.append(Definition(a.name, a.append, [w.value for w in a.array], a.line, [w.line for w in a.array]))
+    return found
+
+
+def variables_from_tree(tree) -> dict[str, str]:
+    """The first plain literal assignment of each name; a value that runs a command is left out."""
+    found: dict[str, str] = {}
+    for node in _assignments(tree):
+        for a in node.assigns:
+            if a.value is None or a.append or a.index is not None:
+                continue
+            if "$(" in a.value.raw or "`" in a.value.raw:
+                continue
+            found.setdefault(a.name, a.value.value)
+    return found
+
+
+def assignment_counts(tree) -> dict[str, int]:
+    """How many times each name is assigned, `local`/`declare`/`export` included (either value may apply)."""
+    counts: dict[str, int] = {}
+    for node in _assignments(tree):
+        for a in node.assigns:
+            counts[a.name] = counts.get(a.name, 0) + 1
+    for c in shast.simple_commands(tree.script):
+        words = c.node.words
+        if words and words[0].value in ("local", "declare", "typeset", "export", "readonly"):
+            for w in words[1:]:
+                m = re.match(r"([A-Za-z_]\w*)\+?=", w.value)
+                if m:
+                    counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    return counts
+
+
 def expand(value: str, variables: dict[str, str]) -> str:
     for _ in range(5):
         expanded = re.sub(
@@ -202,12 +246,12 @@ def definitions(pre: Preprocessed):
             yield Definition(name.group(1), bool(match.group(1)), items, line.number, _item_lines(pre, line, items))
 
 
-def collect_arrays(pre: Preprocessed, overridden: list | None = None) -> dict[str, Array]:
+def collect_arrays(pre: Preprocessed, overridden: list | None = None, defs=None) -> dict[str, Array]:
     """name -> Array as makepkg would see it: `+=` appends, a later `=` replaces. The values that were
     replaced are appended to `overridden` as (name, Array), because a replaced source is still
     something the author wrote and must not escape review."""
     arrays: dict[str, Array] = {}
-    for d in definitions(pre):
+    for d in (definitions(pre) if defs is None else defs):
         if d.appends and d.name in arrays:
             old = arrays[d.name]
             merged = Array(old.items + d.items, old.line, old.item_lines + d.item_lines)
@@ -396,9 +440,22 @@ class ParsedFile:
                 feeding = True
         return tuple(out), frozenset(bad)
 
+    @cached_property
+    def _tree(self):
+        """The syntax tree when it covers the whole file (no statement was left unread), else None and the
+        text route answers: an unread statement could hide an assignment."""
+        if not USE_AST or self.pre is None or self.ast is None or self.ast.errors:
+            return None
+        return self.ast
+
     def assignment_line(self, name: str) -> int | None:
         """Line of the first plain assignment or array definition of `name`."""
         if self.pre is None:
+            return None
+        if self._tree is not None:
+            for node in _assignments(self._tree):
+                if any(a.name == name and a.index is None for a in node.assigns):
+                    return node.line
             return None
         for line in self.pre.lines:
             if line.kind in ("assignment", "array") and re.match(rf"{re.escape(name)}\+?=", line.text):
@@ -407,6 +464,8 @@ class ParsedFile:
 
     @cached_property
     def variables(self) -> dict[str, str]:
+        if self._tree is not None:
+            return variables_from_tree(self._tree)
         return literal_variables(self.pre) if self.pre is not None else {}
 
     @cached_property
@@ -416,7 +475,9 @@ class ParsedFile:
         if self.pre is None:
             return {}
         counts: dict[str, int] = {}
-        for line in self.pre.lines:
+        if self._tree is not None:
+            counts = assignment_counts(self._tree)
+        for line in () if self._tree is not None else self.pre.lines:
             if line.kind in ("assignment", "array"):
                 for name in re.findall(r"(?:^|\s)(?:local\s+|declare\s+(?:-\w+\s+)?|export\s+|readonly\s+)?([A-Za-z_]\w*)\+?=", line.text):
                     counts[name] = counts.get(name, 0) + 1
@@ -429,11 +490,13 @@ class ParsedFile:
     @cached_property
     def replaced_arrays(self) -> tuple[dict[str, Array], list]:
         replaced: list = []
-        arrays = collect_arrays(self.pre, replaced) if self.pre is not None else {}
+        arrays = collect_arrays(self.pre, replaced, self.definitions) if self.pre is not None else {}
         return arrays, replaced
 
     @cached_property
     def definitions(self) -> tuple[Definition, ...]:
+        if self._tree is not None:
+            return tuple(definitions_from_tree(self._tree))
         return tuple(definitions(self.pre)) if self.pre is not None else ()
 
 
