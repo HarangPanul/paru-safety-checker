@@ -106,6 +106,46 @@ Keeping the questions few:
 Files: asking per write is too frequent. Use sandbox policy instead (writes only under `$srcdir`/`$pkgdir`;
 reads of sensitive places such as `~/.ssh` blocked, the attempt recorded).
 
+## Shared observation server (idea, not decided, not started)
+
+Idea: a server collects what installing a package did on other users' machines (files, hosts, programs) and
+shows it before the next user installs. Valuable, but the server becomes a new thing to trust and a new target.
+
+Gains:
+- many real runs in different environments reduce the "a path that did not run is unknown" gap, at no build
+  cost to the one user;
+- the strongest signal is change between versions ("the last version only contacted github.com, this one
+  contacts a new domain"), which is what a hijacked maintainer account looks like;
+- predicted-versus-observed differences show where the static analysis and the AI miss things, and feed
+  rule and prompt improvements.
+
+Risks:
+- the server is a single point of trust: a compromised or malicious server can show a false "normal";
+- the uploaders are untrusted: fake users (sybil) can fill a malicious package with "normal" records, and a
+  package can behave only for a few targeted users or only outside an analysis environment;
+- new versions and new packages have no record, which is where attacks concentrate; "no record" is not a
+  sign of safety;
+- records carry paths, host names, IPs and the list of installed packages: privacy, consent and deletion;
+- operations cost, abuse handling, availability; records and package metadata are untrusted input to the
+  server too (injection, prompt injection when shown to the AI);
+- environments differ (dependencies, options, architecture), so one "normal profile" does not exist;
+- "hundreds installed it without trouble" reads as a safety signal, against the rule that silence is not a verdict.
+
+Design rules to keep:
+- the server is reference material, not a judge: show facts ("observed on N machines: ..."), never a score or a
+  verdict; do not use the number of records as trust;
+- lead with differences (between versions, and between prediction and observation), which stay meaningful
+  even if the records are polluted;
+- minimise and generalise records before upload: `$HOME`/`$srcdir`/`$pkgdir` instead of real paths, domains
+  instead of full URLs, package name and version plus kind of access, no user identifier;
+- the tool must work without the server; data from it is treated as untrusted like any other input;
+- show where a record comes from (architecture, sandboxed or not, how many times) and say "no record" plainly.
+
+First step, no server: keep the observation of each install on the user's own machine per package and
+version, and on an update show only the access that is new compared with the last install. This gives the
+most valuable part (change between versions) without the privacy, trust and sybil problems. Share
+anonymised summaries through a server only once there are enough users.
+
 ## Other recorded items
 - Run the cross-check against bash (`crosscheck.py`) on the syntax tree instead of the lexer's lines, and let the
   pattern rules read units made from the tree (they still read `preprocess.py`'s lines, a lexical view).
