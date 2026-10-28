@@ -31,6 +31,39 @@ Suggested first steps:
 2. Compute per-step "closed or open" from the default-deny classification in `strict.py`.
 3. Only for closed steps, emit the non-access list; map everything onto `effects` and `gaps` in `docs/IR.md`.
 
+## Prediction before install, observed access after install (decided, not started)
+
+Decision: before installing, static analysis (plus the AI) tells the user what the package is *expected* to
+access (the regions above). After installing, the tool reports what the install *actually* accessed
+(files, URLs, programs run) and compares it with the prediction. The prediction informs the install
+decision; the observation is an after-the-fact report, not a defence.
+
+Consequences to keep in mind:
+- The observation arrives after the code ran. It cannot stop anything and must never be worded as
+  "verified safe". Install is still always asked for first, on the prediction alone.
+- It covers what the static analysis cannot see: subshells, other programs (`make`, `npm`, downloaded
+  binaries), `eval`, anything built at run time. A path that did not run this time is unknown, not
+  "not accessed"; "observed" and "predicted non-access" are different guarantees.
+- The record must live outside the observed process (a parent process or a separate log), because
+  the installed code can delete or alter a log it can reach. `.install` hooks run as root, which needs
+  separate handling.
+- A script that detects tracing can behave differently, so a clean record proves little.
+
+How to observe (candidates): `strace -f -e trace=file,network,execve` around makepkg / paru and the
+pacman install; namespaces or `bwrap` when blocking is wanted; a proxy or firewall log for URLs
+(HTTPS shows only the host).
+
+Report layout (after install):
+| Section | Meaning |
+|---|---|
+| as predicted | in the prediction and observed |
+| not predicted | observed but the prediction did not cover it: the most important section, shown first |
+| not observed | predicted but did not happen this time (says nothing about other runs) |
+
+Open questions: where to run the observation (the user's own build vs a separate isolated build before
+install, which would make it a pre-install defence at the cost of build time and dependencies); how to
+record root-run hooks; how the AI should use the "not predicted" list to improve its next prediction.
+
 ## Other recorded items
 - Run the cross-check against bash (`crosscheck.py`) on the syntax tree instead of the lexer's lines, and let the
   pattern rules read units made from the tree (they still read `preprocess.py`'s lines, a lexical view).
