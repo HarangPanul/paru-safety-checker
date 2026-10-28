@@ -246,3 +246,11 @@ def test_verbose_lists_routine_operations(capsys):
     assert "not listed; use --safe-verbose" in capsys.readouterr().err
     run(["-S", "foo", "--safe-verbose"], FakeProvider(safe), files=files)
     assert "write $pkgdir/usr/bin/foo" in capsys.readouterr().err
+
+
+def test_lowest_level_is_shown_as_no_findings_not_safe():
+    from paru_safety_checker.models import Verdict
+    from paru_safety_checker.report import format_verdict
+    text = format_verdict("pkg", Verdict("safe", "nothing marked", []))
+    assert "NO FINDINGS" in text and "SAFE" not in text
+    assert "DANGER" in format_verdict("pkg", Verdict("danger", "x", []))

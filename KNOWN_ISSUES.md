@@ -2,6 +2,18 @@
 
 ## Not developed yet (deliberately deferred)
 
+### A one-page summary of what the PKGBUILD is and does
+
+The project's goal is to help the reader understand a PKGBUILD faster than reading it (see README).
+Today the activity report covers what the script does (network, files outside the build tree,
+install hooks, code that runs on parse, commands). Still missing:
+- a structured **composition** view: sources (URL, checksum, pinned or not), dependencies, what each
+  function (`prepare`/`build`/`check`/`package`) does;
+- an AI-written summary that may only restate parsed facts, with a source line for every sentence, and a
+  visible list of what it could not cover (parse failures, truncated files, run-time command names);
+- changing the "no findings, install immediately" path: with this goal, silence is not a verdict, so the
+  default may need to show the summary even when nothing is marked.
+
 ### Judging what the downloaded sources do
 
 **Decision:** this is left to the user. `paru-safe` reports *what is downloaded* (URL, checksum,

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "paru-safety-checker"
 version = "0.1.0"
-description = "Scan AUR PKGBUILDs with AI before installing them with paru"
+description = "Help you understand what an AUR PKGBUILD is made of and does before installing it with paru"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "HarangPanul" }]
