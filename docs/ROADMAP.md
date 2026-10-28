@@ -146,6 +146,48 @@ version, and on an update show only the access that is new compared with the las
 most valuable part (change between versions) without the privacy, trust and sybil problems. Share
 anonymised summaries through a server only once there are enough users.
 
+### Shared observation server: signing and storage (discussed, not decided)
+
+Trust moves from the server to keys, but only partly. A signature proves who said it, not that it is true:
+- solved: a compromised server or a man in the middle cannot forge a record when the signing key is kept off
+  the server; the server becomes plain storage; a bad signer can be revoked;
+- not solved: a signer that lies or is compromised, many fake keys (the number of signatures is not trust),
+  targeted attacks, the privacy of a key that links its uploads, and the gap for new versions.
+- OpenSSH can do it (`ssh-keygen -Y sign` / `-Y verify` with an `allowed_signers` file, called as a
+  process so the tool stays standard-library only). GPG (the Arch keyring already exists), minisign and
+  sigstore are alternatives. The real question is the same for all: who decides which keys are trusted.
+
+Rules:
+- a record without a valid signature from an allowed key is ignored, and the report says it was ignored;
+- a valid signature does not make the content a verdict: it is still shown as facts only;
+- the signature covers the key (below), the record, the environment and the time as one block, so an old
+  signed record cannot be reused for another package or version (replay); freshness is checked.
+
+Trust models, most realistic first:
+1. keys of a few audit agents run by the project (an isolated environment installs the package and the
+   project signs the result; the key is kept offline, which is a much smaller target than a server);
+2. only keys the user chose (`allowed_signers`): safest, useless without people to trust;
+3. every user signs their own upload: shows origin only, does not stop fake keys or pollution.
+Until there are enough users, ordinary user records stay local and are not uploaded.
+
+What a record is about (the key). The PKGBUILD hash alone is not enough: `.install` hooks (run as root), patches
+and helper scripts change without it, and so do unpinned sources (`SKIP`, a VCS source without `#commit=`) and
+dependencies. A git commit hash covers the whole repository, but it also contains author, time, message and
+parent, so equal content can have different hashes, and it is SHA-1. So:
+| Field | Use |
+|---|---|
+| git tree hash of HEAD | the key: equal content, equal key |
+| HEAD commit hash and parent commit hash | link to the previous version; what a user can compare with their own checkout |
+| sha256 of every file | inside the signed block, to make up for SHA-1; computed over the whole repository, not only the files the tool read (large files can be omitted from review) |
+| pkgbase, pkgver, pkgrel | readable name |
+| whether each source is pinned, and the real hash of what was downloaded | marks the part of the behaviour the key does not cover |
+
+A key holds many records, not one pair: one per environment (architecture, tool versions, sandboxed or not,
+network policy) and per signer, each with the result (success or the step that failed) and a schema version.
+They are shown as counts of facts ("observed 12 times; contacted X in 12, Y in 3"), never merged into a score.
+Change detection compares the record set of a key with that of its parent key. Whether AUR allows rewriting
+history is to be checked; a rewrite breaks the link to the previous version but not the content hash.
+
 ## Other recorded items
 - Run the cross-check against bash (`crosscheck.py`) on the syntax tree instead of the lexer's lines, and let the
   pattern rules read units made from the tree (they still read `preprocess.py`'s lines, a lexical view).
