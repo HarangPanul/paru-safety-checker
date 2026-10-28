@@ -156,7 +156,8 @@ class Stats:
     aborted: str = ""
 
 
-def iter_records(path: Path) -> Iterator[dict]:
+def iter_records(path: Path | str) -> Iterator[dict]:
+    path = Path(path)
     if not path.is_file():
         return
     with path.open() as handle:

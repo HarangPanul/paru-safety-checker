@@ -254,3 +254,10 @@ def test_measure_counts_what_the_noisy_rules_are_about(tmp_path):
     assert report["details"]["unknown-command"] == {"arch-meson": 2, "frobnicate": 1}
     assert report["details"]["unanalyzed-file"] == {".py": 2}
     assert "arch-meson" in corpus.format_report(report)
+
+
+def test_iter_records_accepts_a_string_path(tmp_path):
+    file = tmp_path / "corpus.jsonl"
+    file.write_text('{"name": "a"}\n{"name": "b"')
+    assert [r["name"] for r in corpus.iter_records(str(file))] == ["a"]
+    assert list(corpus.iter_records(str(tmp_path / "missing"))) == []
