@@ -1,6 +1,6 @@
 # 명령 표와 이름 해석 설계 (초안)
 
-> 상태: **1단계 구현됨**(표 읽기·점검·예시 시험: `commandtable.py`, 데이터: `commandtable_data.py`). 아직 `strict.py` 등 어디에서도 쓰지 않으므로 동작은 그대로입니다. 2~6단계는 구현 전입니다.
+> 상태: **1~2단계 구현됨**. 1단계는 표 읽기·점검·예시 시험(`commandtable.py`, 데이터 `commandtable_data.py`), 2단계는 `strict.py`가 자체 허용 목록 대신 이 표를 쓰는 것입니다(`classify()`는 `"build"`/`"hook"`을 받고, `sed`·`awk`·`tar`·`find`·`git`·인터프리터·`pacman`의 검사는 표의 항목과 술어가 정합니다). 결과는 이전 코드와 같은 입력 29,360개로 비교해 규칙·수준·줄이 같았고, 달라진 것은 `git -c 'x'`, `git -` 같은 깨진 호출의 메시지 문구 6건뿐입니다. 3~6단계는 구현 전입니다.
 > 확인: `python -m paru_analyzer.commandtable --check`(점검과 예시 실행), `--show 이름`(한 명령이 표에 어떻게 적혀 있는지).
 > 관련: `strict.py`(지금의 허용 목록), `ir.py`(`ops`와 `area`), `docs/IR.md`, `docs/ROADMAP.md`의 접근 위치 분석.
 
