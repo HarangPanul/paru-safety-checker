@@ -70,6 +70,7 @@ class Command(NamedTuple):
     piped: bool
     redirects: tuple = ()  # ((operator, target), ...) for > >> < etc.; heredoc bodies are not files
     segment: int = 0       # commands of one pipeline stage share a number; a piped stage reads stage - 1
+    inside: bool = False   # runs inside a `$(...)`, `<(...)` or backtick substitution
 
 
 def _match_paren(s: str, i: int) -> int:
@@ -228,6 +229,7 @@ def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = Non
     redirects: list[tuple[str, str]] = []
     seg_piped = False
     open_parens = 0
+    groups: list[bool] = []         # one entry per open `(` / `{`: did a pipe feed it? Everything inside reads that pipe
     pending_op: str | None = None
     for token in tokens:
         if token in SEGMENT_OPS:
@@ -243,12 +245,15 @@ def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = Non
                 continue
             if token == "(":
                 open_parens += 1
+                groups.append(seg_piped and not current)
             elif token == ")":
                 open_parens -= 1
+                if groups:
+                    groups.pop()
             if current or redirects:
                 segments.append((current, seg_piped, redirects))
             current, redirects = [], []
-            seg_piped = token in ("|", "|&")
+            seg_piped = token in ("|", "|&") or (any(groups) and token != ")")
             continue
         if token in REDIRECTS:
             pending_op = token
@@ -256,10 +261,15 @@ def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = Non
                 current.pop()
             continue
         if pending_op is not None:
-            if pending_op not in ("<<", "<<-", "<<<") and not re.fullmatch(r"\d+|-", token):
+            if pending_op not in ("<<", "<<-") and not re.fullmatch(r"\d+|-", token):
                 redirects.append((pending_op, token))
             pending_op = None
             continue
+        if not current:
+            if token == "{":
+                groups.append(seg_piped)
+            elif token == "}" and groups:
+                groups.pop()
         current.append(token)
     if current or redirects:
         segments.append((current, seg_piped, redirects))
@@ -276,7 +286,7 @@ def extract_commands(text: str, _depth: int = 0, _stages: list[int] | None = Non
         stages[0] += 1
     for inner in subs:
         inner_commands, inner_ok = extract_commands(inner, _depth + 1, stages)
-        commands.extend(inner_commands)
+        commands.extend(c._replace(inside=True) for c in inner_commands)
         ok = ok and inner_ok
     return commands, ok
 

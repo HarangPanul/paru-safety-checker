@@ -23,6 +23,8 @@ from .strict import Command, extract_commands, strip_substitutions
 
 ARRAY_LINE = re.compile(r"^[A-Za-z_]\w*(?:\[[^\]]*\])?(\+?)=\((.*)\)\s*$", re.S)
 ARRAY_NAME = re.compile(r"^([A-Za-z_]\w*)")
+OPENS_PIPED_GROUP = re.compile(r"\|&?\s*[({][^)}]*$")
+CLOSES_GROUP = re.compile(r"[)}]\s*(?:[|&;<>].*)?$")
 HEREDOC_OPEN = re.compile(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
 
@@ -33,6 +35,23 @@ class Unit(NamedTuple):
     comment: bool
 
 
+class Group:
+    """The commands found so far on one source line, in order. A pipe that follows a closing `)` or `}`
+    (`{ curl x; echo; } | sh`) is fed by all of them, so a command after such a pipe points at its group
+    and the number of commands the group held at that moment, instead of copying them."""
+
+    def __init__(self) -> None:
+        self.commands: list[Command] = []
+        self._prefix: list[frozenset] = []          # _prefix[i]: tags of commands[:i + 1], filled on demand
+
+    def tags(self, tagger, upto: int) -> frozenset:
+        while len(self._prefix) < min(upto, len(self.commands)):
+            index = len(self._prefix)
+            previous = self._prefix[-1] if self._prefix else frozenset()
+            self._prefix.append(previous | tagger(self.commands[index]))
+        return self._prefix[min(upto, len(self.commands)) - 1] if upto and self.commands else frozenset()
+
+
 class ParsedCommand(NamedTuple):
     """A simple command plus where it is and what surrounds it."""
     command: Command
@@ -40,18 +59,61 @@ class ParsedCommand(NamedTuple):
     text: str                       # the whole preprocessed command line it came from
     top: bool                       # outside every function: runs when the file is merely parsed
     siblings: tuple                 # every Command extracted from the same line, in order
+    stage_map: dict | None = None   # segment -> commands, built once per line and shared by its commands
+    fed_by: tuple | None = None     # (Group, count): the commands before this line that feed its leading pipe
 
     def upstream(self) -> list[Command]:
         """Commands of the earlier stages of the pipeline this command receives its input from."""
-        by_stage: dict[int, list[Command]] = {}
-        for other in self.siblings:
-            by_stage.setdefault(other.segment, []).append(other)
+        by_stage = self._stages()
         found: list[Command] = []
         stage = self.command.segment
         while stage in by_stage and by_stage[stage][0].piped and stage - 1 in by_stage:
             stage -= 1
             found.extend(by_stage[stage])
+        if self.fed_by and stage in by_stage and by_stage[stage][0].piped:
+            group, count = self.fed_by
+            found.extend(reversed(group.commands[:count]))
         return found
+
+    def _stages(self) -> dict:
+        if self.stage_map is not None:
+            return self.stage_map
+        by_stage: dict = {}
+        for other in self.siblings:
+            by_stage.setdefault(other.segment, []).append(other)
+        return by_stage
+
+    def upstream_tags(self, tagger) -> frozenset:
+        """The union of `tagger(command)` over everything `upstream()` would return, without building that
+        list. Each stage's answer is computed once and kept, so a pipeline of n stages costs n, not n squared.
+        `tagger` must be the same function on every call (the kept answers do not record which one made them)."""
+        by_stage = self._stages()
+        memo = by_stage.setdefault("memo", {})
+
+        def feeds(stage):
+            return stage in by_stage and by_stage[stage][0].piped and stage - 1 in by_stage
+
+        chain, stage = [], self.command.segment
+        while feeds(stage) and stage not in memo:
+            chain.append(stage)
+            stage -= 1
+        if stage in memo:
+            before = memo[stage]
+        elif self.fed_by and stage in by_stage and by_stage[stage][0].piped:
+            before = self.fed_by[0].tags(tagger, self.fed_by[1])     # the pipe at the bottom is fed by a group
+        else:
+            before = frozenset()
+        for stage in reversed(chain):
+            tags = frozenset().union(*(tagger(c) for c in by_stage[stage - 1]), before)
+            memo[stage] = before = tags
+        return before
+
+    def substitution_tags(self, tagger) -> frozenset:
+        """Tags of the commands of every substitution on this line (`$(...)`, `<(...)`)."""
+        memo = self._stages().setdefault("memo", {})
+        if "sub" not in memo:
+            memo["sub"] = frozenset().union(*(tagger(c) for c in self.siblings if c.inside))
+        return memo["sub"]
 
 
 class Array(NamedTuple):
@@ -172,10 +234,13 @@ def _commands_of(line: Line) -> tuple[list[Command], bool]:
 MAX_PAYLOAD_DEPTH = 4
 
 
-def _collect(found: list[Command], line: Line, out: list, depth: int) -> None:
+def _collect(found: list[Command], line: Line, out: list, depth: int, fed_by: tuple | None = None) -> None:
     """Add a line's commands, then the commands inside any `sh -c STR` / `eval STR` they start."""
     siblings = tuple(found)
-    out.extend(ParsedCommand(c, line.number, line.text, line.region == "top", siblings) for c in found)
+    stage_map: dict[int, list[Command]] = {}
+    for other in siblings:
+        stage_map.setdefault(other.segment, []).append(other)
+    out.extend(ParsedCommand(c, line.number, line.text, line.region == "top", siblings, stage_map, fed_by) for c in found)
     if depth >= MAX_PAYLOAD_DEPTH:
         return
     for command in found:
@@ -260,13 +325,30 @@ class ParsedFile:
             return (), frozenset()
         out: list[ParsedCommand] = []
         bad: set[int] = set()
+        group, group_line = Group(), 0          # the commands of the current source line, for pipes after `)` / `}`
+        feeding = False                         # inside a `( ... )` / `{ ... }` that a pipe feeds
         for line in self.pre.lines:
             if line.kind in ("heredoc-end", "case-pattern", "function"):
                 continue
-            found, ok = _commands_of(line)
+            continues = line.text.lstrip().startswith("|")
+            if not feeding and not continues and line.number != group_line:
+                group, group_line = Group(), line.number
+            closing = feeding and line.text.rstrip().endswith(")")
+            found, ok = _commands_of(line._replace(text=line.text.rstrip()[:-1]) if closing else line)
             if not ok:
                 bad.add(line.number)
-            _collect(found, line, out, 0)
+            fed_by = None
+            if (feeding or continues) and found and group.commands:
+                # `(curl x) | sh` reaches us as `curl x` and `| sh`; `curl x | (cd /tmp; sh)` as
+                # `curl x | (cd /tmp` and `sh)`. Those lines read a pipe the earlier ones feed.
+                fed_by = (group, len(group.commands))
+                found = [found[0]._replace(piped=True)] + found[1:]
+            _collect(found, line, out, 0, fed_by)
+            group.commands.extend(found)
+            if feeding and found:
+                feeding = not CLOSES_GROUP.search(line.text)
+            elif not feeding and found and OPENS_PIPED_GROUP.search(line.text):
+                feeding = True
         return tuple(out), frozenset(bad)
 
     def assignment_line(self, name: str) -> int | None:
@@ -281,6 +363,19 @@ class ParsedFile:
     @cached_property
     def variables(self) -> dict[str, str]:
         return literal_variables(self.pre) if self.pre is not None else {}
+
+    @cached_property
+    def stable_variables(self) -> dict[str, str]:
+        """Literal variables assigned exactly once in the file, so `$d` means the same thing wherever it is
+        used. A name assigned twice (`dir=/etc` then `dir=$pkgdir/etc`) is left out: either value may apply."""
+        if self.pre is None:
+            return {}
+        counts: dict[str, int] = {}
+        for line in self.pre.lines:
+            if line.kind in ("assignment", "array"):
+                for name in re.findall(r"(?:^|\s)(?:local\s+|declare\s+(?:-\w+\s+)?|export\s+|readonly\s+)?([A-Za-z_]\w*)\+?=", line.text):
+                    counts[name] = counts.get(name, 0) + 1
+        return {k: v for k, v in self.variables.items() if counts.get(k, 0) == 1 and k not in ("pkgdir", "srcdir", "startdir")}
 
     @cached_property
     def arrays(self) -> dict[str, Array]:

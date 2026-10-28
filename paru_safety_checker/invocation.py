@@ -28,7 +28,8 @@ _WRAPPERS: dict[str, frozenset] = {
     "stdbuf": frozenset({"-i", "-o", "-e"}),
     "timeout": frozenset({"-s", "-k"}),
     "nohup": frozenset(), "setsid": frozenset(), "time": frozenset(), "command": frozenset(),
-    "builtin": frozenset(), "exec": frozenset(), "fakeroot": frozenset(), "xvfb-run": frozenset(),
+    "builtin": frozenset(), "exec": frozenset(), "busybox": frozenset(),
+    "xargs": frozenset({"-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "-J", "-R", "-S"}), "fakeroot": frozenset(), "xvfb-run": frozenset(),
 }
 
 
@@ -79,13 +80,19 @@ def views(command: Command) -> Iterator[Command]:
         yield current
 
 
+STDIN_PATHS = frozenset({"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
+
+
 def reads_program_from_stdin(name: str, args: list[str]) -> bool:
-    """A shell or interpreter that takes its program from stdin: no script operand and no -c/-e/-m."""
+    """A shell or interpreter that takes its program from stdin: no script operand and no -c/-e/-m. `source`
+    and `.` do when their file is /dev/stdin."""
     name = base(name)
+    if name in ("source", "."):
+        return any(a in STDIN_PATHS for a in args[:1])
     if name not in SHELLS and not interpreter(name):
         return False
     for arg in args:
-        if arg == "-":
+        if arg in STDIN_PATHS:
             return True
         if arg == "--":
             continue

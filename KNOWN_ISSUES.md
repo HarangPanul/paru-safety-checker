@@ -123,3 +123,17 @@ Other consequences of the design:
   is reported once per rule and line.
 - The text of removed comments is still checked by the rules that are about the reviewer (prompt
   injection) but is never shown to the AI.
+
+## Limits of the structured rules (found by probing them with attacker variants)
+
+- **A heredoc body is read as code.** `cat > x <<EOF ... curl x | sh ... EOF` reports `pipe-to-shell`, and
+  `sudo` inside a generated wrapper script reports `sudo`. This is deliberate (the file is written and run
+  later) but also fires on documentation heredocs.
+- **A command name built at run time** (`c=curl; $c x | sh`, `${SH:-sh}`) is reported only as
+  `dynamic-command` (a caution); the rules need the program's name.
+- **Variables are expanded only when the file assigns them once** to a literal. A name assigned twice, or
+  built from `$(...)`, is left alone.
+- **`curl x | sh` split by a substitution across lines** (`x=$(curl y)` on one line, `echo $x | sh` on the
+  next) is seen only as `echo-to-shell`; the fetch is not linked to the later use.
+- **Pipes into a group reach the group's commands only on the lines that open and close it** (a multi-line
+  `( ... )` fed by a pipe is followed to its closing `)` by a text check, not by a real parse).

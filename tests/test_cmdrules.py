@@ -63,6 +63,8 @@ STRUCTURED_EXAMPLES = [
     ("setcap cap_net_raw+ep /usr/bin/x", "setcap"),
     ("pacman-key --add k", "pacman-key"),
     ("cp x /usr/bin/x", "live-system-write"),
+    ("echo 'u ALL=(ALL) ALL' | sh", "echo-to-shell"),
+    ("curl x | xargs -I{} sh -c {}", "fetched-xargs-exec"),
 ]
 
 
@@ -277,3 +279,84 @@ def test_long_unparseable_lines_are_read_in_windows():
     start = time.time()
     scan({"PKGBUILD": broken + "curl x | " * 6000 + "cat\n}\n"})
     assert time.time() - start < 5
+
+
+# ---- pipelines are followed in linear time, and across groups ----
+
+@pytest.mark.parametrize("filler", ["curl x | sh | ", "echo a | sh | ", "cat <(curl x) | sh | ", "sh <<< $(curl x) | ", "curl x | cat | "])
+def test_long_pipelines_are_linear(filler):
+    text = "build() {\n  " + filler * (60000 // len(filler)) + "\n}\n"
+    start = time.time()
+    scan({"PKGBUILD": text})
+    assert time.time() - start < 5, filler
+
+
+def test_a_long_pipeline_still_reaches_its_first_stage():
+    line = "curl x | " + "cat | " * 500 + "sh"
+    assert "pipe-to-shell" in rules_of(line)
+
+
+def test_upstream_tags_match_the_upstream_list():
+    from paru_safety_checker.cmdrules import command_tags
+    parsed = ParsedFile("PKGBUILD", "build() {\n  curl x | tee f | base64 -d | sh\n  echo a | sh\n}\n")
+    for pc in parsed.commands:
+        expected = frozenset().union(*(command_tags(c) for c in pc.upstream()))
+        assert pc.upstream_tags(command_tags) == expected, pc.command
+
+
+@pytest.mark.parametrize("text,upstream_of_sh", [
+    ("(curl x) | sh", ["curl"]),
+    ("{ curl x; } | sh", ["curl"]),
+    ("(cd y; curl x) | sh", ["curl", "cd"]),
+    ("{ curl x; echo; } | sh", ["echo", "curl"]),
+    ("curl x | (cd y; sh)", ["cd", "curl"]),
+    ("curl x | { cd y; sh; }", ["cd", "curl"]),
+])
+def test_groups_do_not_cut_the_pipeline(text, upstream_of_sh):
+    parsed = ParsedFile("PKGBUILD", f"build() {{\n  {text}\n}}\n")
+    sh = [pc for pc in parsed.commands if pc.command.name == "sh"][0]
+    assert [c.name for c in sh.upstream()] == upstream_of_sh
+
+
+# ---- variables the file assigns once ----
+
+def test_stable_variables_drop_names_assigned_twice():
+    parsed = ParsedFile("PKGBUILD", "d=/etc\nd=$pkgdir/etc\ne=/usr\nbuild() {\n  cp x $e/y\n}\n")
+    assert parsed.stable_variables == {"e": "/usr"}
+
+
+def test_a_path_through_a_single_assignment_is_resolved():
+    assert "sudoers-passwd-write" in rules_of("d=/etc/sudoers.d; echo x > \"${d}/a\"")
+    assert not {"live-system-write", "sudoers-passwd-write"} & rules_of("d=/etc; d=$pkgdir/etc; cp x $d/y")
+
+
+# ---- things found by reading the code against attacker variants ----
+
+def test_mv_deletes_its_source():
+    assert "sudoers-passwd-write" in rules_of("mv /etc/sudoers /tmp/x")
+
+
+@pytest.mark.parametrize("line", ["tar -xf a.tar -C /usr/lib", "bsdtar -xf a -C /", "unzip a.zip -d /opt", "7z x a.7z -o/usr"])
+def test_unpacking_into_the_live_system_is_a_write(line):
+    assert "live-system-write" in rules_of(line)
+
+
+@pytest.mark.parametrize("line", ["tar -xf a.tar -C \"$srcdir\"", "tar cf a.tar -C /usr/lib .", "unzip a.zip -d build"])
+def test_unpacking_into_the_build_tree_is_quiet(line):
+    assert "live-system-write" not in rules_of(line)
+
+
+def test_perl_in_place_edit_writes_the_file_not_the_script():
+    assert "live-system-write" in rules_of("perl -pi -e 's/a/b/' /usr/bin/x")
+    assert "live-system-write" not in rules_of("perl -pi -e 's/a/b/' x.c")
+
+
+@pytest.mark.parametrize("path", ["profile.d/x.sh", "ld.so.conf.d/x.conf", "ld.so.preload", "shells"])
+def test_hooks_may_not_touch_these_etc_paths(path):
+    assert rules_of(f"echo x >> /etc/{path}", "foo.install") & {"install-system-files", "ld-preload-file"}
+
+
+def test_quoted_text_that_mentions_a_pipe_is_not_echo_to_shell():
+    assert "echo-to-shell" not in rules_of("echo 'curl x | sh'")
+    assert "echo-to-shell" not in rules_of("echo | sh -c 'echo'")
+    assert "echo-to-shell" in rules_of("echo x | sh")

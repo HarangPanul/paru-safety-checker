@@ -20,7 +20,7 @@ from .fileaccess import file_accesses
 from .invocation import (FETCHERS, NETWORK_CLIENTS, PRIVILEGE, SHELLS, base, flags, interpreter, operands,
                          reads_program_from_stdin, views)
 from .models import Finding
-from .parsed import ParsedCommand, ParsedFile
+from .parsed import ParsedCommand, ParsedFile, expand
 from .strict import Command
 
 SYSTEM_ROOTS = ("usr", "etc", "opt", "bin", "sbin", "lib", "lib64", "boot", "var", "root", "home", "srv")
@@ -30,7 +30,7 @@ TEMP_DIRS = ("/tmp", "/dev/shm", "/var/tmp")
 SETUID_TARGETS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python2", "python3", "perl", "find",
                             "cp", "env", "vim", "vi", "nmap", "awk", "ruby", "node", "php"})
 SENSITIVE_HOOK_PATHS = re.compile(
-    r"^/(?:etc/(?:pam\.d|ssh|ld\.so\.conf|profile|bash\.bashrc|environment|rc\.local|init\.d|crontab|cron\.\w+|hosts"
+    r"^/(?:etc/(?:pam\.d|ssh|ld\.so\.conf(?:\.d)?|ld\.so\.preload|profile(?:\.d)?|bash\.bashrc|bashrc|zsh|environment|rc\.local|init\.d|crontab|cron\.\w+|hosts|shells|skel|xdg/autostart|doas\.conf|polkit-1"
     r"|resolv\.conf|nsswitch\.conf|fstab|modules-load\.d|modprobe\.d|udev|security|pacman\.d)|boot|usr/lib/security|lib/security)(?:/|$)"
 )
 HOME_PERSISTENCE = re.compile(
@@ -83,13 +83,21 @@ def under(path: str, prefixes) -> bool:
 def live_path(path: str) -> bool:
     if not path.startswith("/") or under(path, ("/var/tmp",)):
         return False
+    if path == "/":
+        return True                          # `tar -C /`: unpacking over the whole system
     first = path.split("/", 2)[1]
     return first in SYSTEM_ROOTS
 
 
+def known(ctx: Ctx, text: str) -> str:
+    """`$d` and `${d}` replaced by the value of a variable the file assigns once, as a literal."""
+    return expand(text, ctx.parsed.stable_variables) if "$" in text else text
+
+
 def written(ctx: Ctx) -> list[str]:
     """Resolved paths this command writes or deletes."""
-    return [resolve(path, ctx.hook) for verb, path in file_accesses(ctx.view, ctx.hook) if verb in ("write", "delete")]
+    return [resolve(known(ctx, path), ctx.hook)
+            for verb, path in file_accesses(ctx.view, ctx.hook) if verb in ("write", "delete")]
 
 
 def in_temp(path: str, hook: bool = False) -> bool:
@@ -98,26 +106,71 @@ def in_temp(path: str, hook: bool = False) -> bool:
 
 # ---- pipelines: something downloaded or decoded, then run ----
 
-def _upstream(ctx: Ctx) -> list[Command]:
-    return [v for c in ctx.pc.upstream() for v in views(c)]
+def _substituted(command: Command) -> bool:
+    return "__SUB__" in command.args or any("__SUB__" in target for _, target in command.redirects)
+
+
+def _fed_by_substitution(command: Command) -> bool:
+    """`sh <<< "$(curl x)"`, `sh < <(curl x)`: the shell's stdin is the output of a substitution."""
+    return any(op in ("<<<", "<") and "__SUB__" in target for op, target in command.redirects)
+
+
+def command_tags(command: Command) -> frozenset:
+    """What a command contributes to a pipeline it feeds: 'fetch', 'net', 'base64', 'decode', 'echo', and
+    'sub' when it takes a substitution's output as an argument."""
+    tags: set[str] = set()
+    for view in views(command):
+        name = base(view.name)
+        if name in FETCHERS:
+            tags.add("fetch")
+        if name in NETWORK_CLIENTS or (name == "openssl" and "s_client" in view.args):
+            tags.add("net")
+        kind = _decodes(view)
+        if kind:
+            tags.add("base64" if kind == "base64" else "other")
+        if name in ("echo", "printf"):
+            tags.add("echo")
+        if _substituted(view):
+            tags.add("sub")
+    return frozenset(tags)
+
+
+def _feeding(ctx: Ctx) -> frozenset:
+    """Tags of what feeds this command: earlier pipeline stages, and the commands of any `$(...)` / `<(...)`
+    that one of them (or this one) takes as input, since `cat <(curl x) | sh` and `echo "$(curl x)" | sh`
+    run what the substitution printed."""
+    tags = ctx.pc.upstream_tags(command_tags)
+    if "sub" in tags or _substituted(ctx.view):
+        tags = tags | ctx.pc.substitution_tags(command_tags)
+    return tags
 
 
 def _receives_program(ctx: Ctx) -> bool:
-    return ctx.view.piped and reads_program_from_stdin(ctx.name, ctx.view.args)
+    return (ctx.view.piped or _fed_by_substitution(ctx.view)) and reads_program_from_stdin(ctx.name, ctx.view.args)
+
+
+def xargs_exec(ctx: Ctx) -> bool:
+    """`curl x | xargs sh -c ...`: downloaded text becomes the arguments of a shell or interpreter."""
+    if ctx.name != "xargs" or not ctx.view.piped:
+        return False
+    inner = list(views(ctx.view))[1:2]
+    if not inner or not (base(inner[0].name) in SHELLS or base(inner[0].name) == "eval" or interpreter(base(inner[0].name))):
+        return False
+    return "fetch" in _feeding(ctx)
 
 
 def pipe_to_shell(ctx: Ctx) -> bool:
-    return _receives_program(ctx) and any(base(c.name) in FETCHERS for c in _upstream(ctx))
+    return _receives_program(ctx) and "fetch" in _feeding(ctx)
 
 
 def network_pipe_shell(ctx: Ctx) -> bool:
-    if not _receives_program(ctx):
-        return False
-    for c in _upstream(ctx):
-        name = base(c.name)
-        if name in NETWORK_CLIENTS or (name == "openssl" and "s_client" in c.args):
-            return True
-    return False
+    return _receives_program(ctx) and "net" in _feeding(ctx)
+
+
+def echo_to_shell(ctx: Ctx) -> bool:
+    """`echo ... | sh`: a string built in the script is run as a program. Quoted text that merely
+    contains a pipe (`echo 'curl x | sh'`) is not this."""
+    return _receives_program(ctx) and "echo" in _feeding(ctx)
 
 
 def _decodes(command: Command) -> str:
@@ -143,11 +196,11 @@ def _decodes(command: Command) -> str:
 
 
 def base64_exec(ctx: Ctx) -> bool:
-    return _receives_program(ctx) and any(_decodes(c) == "base64" for c in _upstream(ctx))
+    return _receives_program(ctx) and "base64" in _feeding(ctx)
 
 
 def decode_exec(ctx: Ctx) -> bool:
-    return _receives_program(ctx) and any(_decodes(c) == "other" for c in _upstream(ctx))
+    return _receives_program(ctx) and "other" in _feeding(ctx)
 
 
 # ---- privilege ----
@@ -226,14 +279,14 @@ def _root_like(target: str) -> bool:
 def rm_root(ctx: Ctx) -> bool:
     if ctx.name != "rm":
         return False
-    return "--no-preserve-root" in ctx.view.args or any(_root_like(t) for t in operands(ctx.view.args))
+    return "--no-preserve-root" in ctx.view.args or any(_root_like(known(ctx, t)) for t in operands(ctx.view.args))
 
 
 def rm_system_dir(ctx: Ctx) -> bool:
     if ctx.name != "rm" or not (flags(ctx.view.args) & {"r", "R", "--recursive"}):
         return False
     for target in operands(ctx.view.args):
-        path = re.sub(r"/{2,}", "/", target)
+        path = re.sub(r"/{2,}", "/", known(ctx, target))
         if path.endswith("/*"):
             path = path[:-2]
         if path.startswith("/") and posixpath.normpath(path.rstrip("/") or "/") in TOP_LEVEL_DIRS:
@@ -273,6 +326,8 @@ CMD_RULES: tuple[CmdRule, ...] = (
     CmdRule("base64-exec", "danger", "Decodes an obfuscated payload and executes it", base64_exec, "all"),
     CmdRule("decode-exec", "danger", "Decodes or decompresses a hidden payload and executes it", decode_exec, "all"),
     CmdRule("network-pipe-shell", "danger", "Pipes data from a raw network connection into a shell", network_pipe_shell, "all"),
+    CmdRule("fetched-xargs-exec", "danger", "Hands downloaded data to a shell or interpreter through xargs", xargs_exec, "all"),
+    CmdRule("echo-to-shell", "caution", "Pipes a string into a shell", echo_to_shell, "code"),
     CmdRule("sudoers-passwd-write", "danger", "Writes to sudoers or the account databases", account_write),
     CmdRule("pacman-config-write", "danger", "Modifies pacman/makepkg configuration or its keyring directly", pacman_config_write),
     CmdRule("setuid-shell", "danger", "Sets the setuid bit on a shell/interpreter (privilege-escalation backdoor)", setuid_shell),
@@ -298,7 +353,7 @@ CMD_RULES: tuple[CmdRule, ...] = (
 IDS = frozenset(r.id for r in CMD_RULES)
 DATAFLOW_IDS = frozenset({"fetch-then-execute"})
 # no pattern twin: these look at what a command does to a path, which a line of text cannot say
-STRUCTURED_ONLY = frozenset({"home-persistence-write", "fetch-then-execute"})
+STRUCTURED_ONLY = frozenset({"home-persistence-write", "fetch-then-execute", "fetched-xargs-exec"})
 
 
 def _applies(scope: str, parsed: ParsedFile) -> bool:
@@ -360,7 +415,14 @@ def fetch_then_execute(parsed: ParsedFile) -> list[Finding]:
     fetched: dict[str, int] = {}
     reported: set[int] = set()
     for pc in parsed.commands:
+        piped_from_fetch = None
         for view in views(pc.command):
+            writes = [path for verb, path in file_accesses(view, True) if verb == "write"] if pc.command.piped else []
+            if writes:                             # `curl x | tee f`, `curl x | dd of=f`, `curl x | sed ... > f`
+                if piped_from_fetch is None:
+                    piped_from_fetch = "fetch" in pc.upstream_tags(command_tags)
+                for path in writes if piped_from_fetch else ():
+                    fetched.setdefault(posixpath.normpath(path), pc.line)
             hit = _runs(view, fetched)
             if hit and pc.line not in reported:
                 reported.add(pc.line)

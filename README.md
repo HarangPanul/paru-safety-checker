@@ -70,10 +70,15 @@ AI 판정은 보조 수단이며 완전한 안전을 보장하지 않습니다. 
 `c''url x | "ba"sh`, `curl x | tee f | sh`, `curl x | sudo -u nobody env bash -s`, `sh -c 'curl x | sh'`,
 `cp x /etc//pam.d/../sudoers`, `rm -rf /./` 같은 변형을 그대로 같은 명령으로 봅니다.
 
-- 파이프 규칙(`pipe-to-shell`, `base64-exec`, `decode-exec`, `network-pipe-shell`)은 **상류 단계 전체**를 봅니다.
-  또 `bash -c '...'`나 스크립트 파일 인자처럼 파이프 입력을 읽지 않는 경우는 위험으로 보지 않습니다.
+- 파이프 규칙(`pipe-to-shell`, `base64-exec`, `decode-exec`, `network-pipe-shell`, `echo-to-shell`, `fetched-xargs-exec`)은
+  **상류 단계 전체**를 봅니다. `(curl x) | sh`, `{ curl x; echo; } | sh`, `curl x | (cd /tmp; sh)`처럼 괄호·중괄호를 건너는 파이프,
+  `cat <(curl x) | sh`, `sh <<< "$(curl x)"`처럼 치환 결과를 입력으로 받는 경우, `source /dev/stdin`, `busybox sh`,
+  `xargs sh -c`도 같은 방식으로 따라갑니다. 반대로 `bash -c '...'`나 스크립트 파일 인자처럼 파이프 입력을 읽지 않는 경우와
+  따옴표 안의 문자열(`echo 'curl x | sh'`)은 위험으로 보지 않습니다.
+  단계별 요약(`upstream_tags`)을 한 번만 계산해 재사용하므로 파이프가 수천 단계여도 선형 시간입니다.
 - 파일 규칙(`live-system-write`, `sudoers-passwd-write`, `pacman-config-write`, `install-system-files`)은 명령이 **쓰거나 지우는 경로**를
-  `//`, `.`, `..`을 정리한 뒤 판단합니다. `.install`에서는 상대 경로를 `/` 기준으로 봅니다(pacman이 `/`에서 실행하기 때문).
+  `//`, `.`, `..`을 정리하고, 파일에서 한 번만 대입된 변수(`d=/etc; cp x $d/y`)를 펼친 뒤 판단합니다. `mv`의 원본은 지워지는 것으로,
+  `tar -C`, `unzip -d`, `7z -o`로 푸는 위치는 쓰는 것으로 봅니다. `.install`에서는 상대 경로를 `/` 기준으로 봅니다(pacman이 `/`에서 실행하기 때문).
 - 이름 규칙(`sudo`, `kernel-module`, `setcap` …)은 프로그램 이름만 봅니다. 그래서 `etc/modprobe.d/` 경로나 `echo sudo`는 걸리지 않습니다.
 - 데이터 흐름 규칙: `fetch-then-execute`(내려받은 파일을 나중에 실행), `home-persistence-write`(빌드가 `~/.bashrc`, 자동 시작,
   사용자 유닛, `authorized_keys`에 씀).

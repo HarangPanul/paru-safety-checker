@@ -15,7 +15,8 @@ PATHLESS = frozenset("echo printf true false : test export unset local declare r
 WRITE_LAST = frozenset({"cp", "mv", "install", "ln", "rsync"})
 WRITE_ALL = frozenset({"tee", "touch", "mkdir", "chmod", "chown", "chgrp", "chattr", "truncate", "mkfifo", "patch"})
 DELETE = frozenset({"rm", "rmdir", "unlink", "shred"})
-SCRIPT_FIRST = frozenset({"sed", "grep", "egrep", "fgrep", "awk"})
+SCRIPT_FIRST = frozenset({"sed", "grep", "egrep", "fgrep", "awk", "perl"})
+EXTRACTORS = frozenset({"tar", "bsdtar", "unzip", "cpio", "7z", "7za"})
 FILE_COMMANDS = WRITE_LAST | WRITE_ALL | DELETE | frozenset(
     "cat ls head tail stat readlink sed grep egrep fgrep awk wc sort diff cmp find tar unzip cd pushd".split()
 )
@@ -35,12 +36,26 @@ def _looks_like_path(arg: str, hook: bool = False, name: str = "") -> bool:
     return (hook and name in FILE_COMMANDS and not re.fullmatch(r"\d+|[+=-]?[ugoa]*[+=-][rwxXst]+", arg))
 
 
+def _extracts(args: list[str]) -> bool:
+    """tar/bsdtar/cpio/7z unpacking rather than listing or creating: `tar xf`, `-xzf`, `--extract`, `7z x`."""
+    for arg in args:
+        if arg == "--extract" or arg == "--get":
+            return True
+        if arg.startswith("--"):
+            continue
+        letters = arg[1:] if arg.startswith("-") else arg
+        if re.fullmatch(r"[A-Za-z]+", letters) and ("x" in letters or letters in ("i",)):
+            return True
+        break
+    return False
+
+
 def file_accesses(command: Command, hook: bool = False) -> list[tuple[str, str]]:
     """(verb, path) pairs a command touches. Approximate: verbs come from a table of known tools."""
     name = normalise(command.name)
     found: list[tuple[str, str]] = []
     for op, target in command.redirects:
-        if target in HARMLESS_TARGETS:
+        if target in HARMLESS_TARGETS or op == "<<<":      # a here-string is text, not a file
             continue
         found.append(("read" if op == "<" else "access" if op == "<>" else "write", target))
     if name in PATHLESS:
@@ -49,7 +64,8 @@ def file_accesses(command: Command, hook: bool = False) -> list[tuple[str, str]]
     args = list(command.args)
     skip: set[int] = set()
     if name in SCRIPT_FIRST:
-        flagged = [i for i, a in enumerate(args) if a in ("-e", "--expression", "-f", "--file") or (a.startswith("-e") and len(a) > 2)]
+        flagged = [i for i, a in enumerate(args) if a in ("-e", "--expression", "-f", "--file") or (a.startswith("-e") and len(a) > 2)
+                   or (name == "perl" and re.fullmatch(r"-[a-zA-Z]*e", a))]
         if flagged:
             for i in flagged:
                 skip.update({i, i + 1})
@@ -58,6 +74,7 @@ def file_accesses(command: Command, hook: bool = False) -> list[tuple[str, str]]
             if first is not None:
                 skip.add(first)
 
+    extracting = name == "unzip" or (name in EXTRACTORS and _extracts(args))
     operands: list[int] = []
     for i, arg in enumerate(args):
         if i in skip or arg == "--":
@@ -65,6 +82,11 @@ def file_accesses(command: Command, hook: bool = False) -> list[tuple[str, str]]
         if arg.startswith("-"):
             key, _, value = arg.partition("=")
             verb = "write" if key in OUTPUT_OPTIONS else "access" if key in ACCESS_OPTIONS else None
+            if verb == "access" and extracting:
+                verb = "write"                      # tar -C DIR / unzip -d DIR: the files land there
+            if name in ("7z", "7za") and arg.startswith("-o") and len(arg) > 2 and _looks_like_path(arg[2:], hook, name):
+                found.append(("write", arg[2:]))
+                continue
             if verb and value and _looks_like_path(value, hook, name):
                 found.append((verb, value))
             elif verb and not value and i + 1 < len(args) and _looks_like_path(args[i + 1], hook, name):
@@ -80,7 +102,8 @@ def file_accesses(command: Command, hook: bool = False) -> list[tuple[str, str]]
         else:
             operands.append(i)
 
-    in_place = name == "sed" and any(a == "-i" or a.startswith("-i") or a == "--in-place" for a in args)
+    in_place = (name == "sed" and any(a == "-i" or a.startswith("-i") or a == "--in-place" for a in args)) or (
+        name == "perl" and any(re.fullmatch(r"-[a-zA-Z]*i\S*", a) for a in args))
     has_target_dir = any(a == "-t" or a.startswith("--target-directory") for a in args)
     destination = operands[-1] if operands else None
     for index in operands:
@@ -92,7 +115,7 @@ def file_accesses(command: Command, hook: bool = False) -> list[tuple[str, str]]
         elif name in WRITE_ALL or in_place:
             verb = "write"
         elif name in WRITE_LAST:
-            verb = "write" if index == destination and not has_target_dir else "read"
+            verb = "write" if index == destination and not has_target_dir else "delete" if name == "mv" else "read"
         elif name == "find" and "-delete" in args:
             verb = "delete"
         else:
