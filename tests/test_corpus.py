@@ -138,9 +138,11 @@ def test_measure_reports_levels_and_rules(tmp_path):
     assert report["total"] == 3
     assert report["levels"] == {"safe": 1, "caution": 1, "danger": 1}
     assert report["flagged"]["danger"] == ["evil"]
+    assert report["flagged"]["safe"] == ["good"] and report["flagged"]["caution"] == ["meh"]
     assert report["rules"]["pipe-to-shell"]["packages"] == ["evil"]
     text = corpus.format_report(report)
     assert "danger packages (review first): evil" in text and "33.3%" in text
+    assert "safe packages (no rule fired, which is not a verdict): good" in text
 
 
 def test_fetch_snapshot_with_real_git(tmp_path, monkeypatch):

@@ -248,7 +248,7 @@ def _detail_key(rule: str, finding) -> str | None:
 def measure(path: Path, examples: int = 3) -> dict:
     """Run the scanner over the corpus; every finding is presumed to be a false positive."""
     levels = {"safe": 0, "caution": 0, "danger": 0}
-    flagged: dict[str, list[str]] = {"caution": [], "danger": []}
+    flagged: dict[str, list[str]] = {"safe": [], "caution": [], "danger": []}
     rules: dict[str, dict] = defaultdict(lambda: {"severity": "", "findings": 0, "packages": set(), "examples": []})
     details: dict[str, Counter] = {rule: Counter() for rule in DETAIL_KEYS}
     total = 0
@@ -259,8 +259,7 @@ def measure(path: Path, examples: int = 3) -> dict:
         findings = scan(record["files"], record["name"])
         level = level_of(findings)
         levels[level] += 1
-        if level != "safe":
-            flagged[level].append(record["name"])
+        flagged[level].append(record["name"])
         for finding in findings:
             if finding.rule in details and (key := _detail_key(finding.rule, finding)):
                 details[finding.rule][key] += 1
@@ -296,6 +295,9 @@ def format_report(report: dict) -> str:
     if report["flagged"]["danger"]:
         lines.append("")
         lines.append("danger packages (review first): " + ", ".join(report["flagged"]["danger"]))
+    if report["flagged"].get("safe"):
+        lines.append("")
+        lines.append("safe packages (no rule fired, which is not a verdict): " + ", ".join(report["flagged"]["safe"]))
     return "\n".join(lines)
 
 
