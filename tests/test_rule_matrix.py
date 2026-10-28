@@ -283,7 +283,7 @@ CASES = [
 ]
 
 # rules that fire on ordinary packaging by design (they ask for review, they do not mean "attack")
-ROUTINE = {"unknown-command", "build-time-download", "dependency-fetch", "registry-install", "vcs-fetch",
+ROUTINE = {"unknown-command", "network-command", "build-time-download", "dependency-fetch", "registry-install", "vcs-fetch",
            "path-modification", "base64-decode"}
 MUST_FIRE = [(line, rule) for line, rule in CASES if rule != "!"]
 MUST_BE_QUIET = [line for line, rule in CASES if rule == "!"]

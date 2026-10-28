@@ -1,6 +1,6 @@
 # 명령 표와 이름 해석 설계 (초안)
 
-> 상태: **1~4단계 구현됨**. 1단계는 표 읽기·점검·예시 시험(`commandtable.py`, `commandtable_data.py`), 2단계는 `strict.py`가 자체 허용 목록 대신 이 표를 쓰는 것(같은 입력 29,360개로 비교해 규칙·수준·줄이 같았고 달라진 것은 `git` 메시지 문구 6건뿐), 3단계는 함수·별칭·경로가 명령 이름을 덮어쓰는 경우를 따라가는 것입니다. 3단계에서 같은 입력의 결과가 달라진 것은 121건이며 모두 의도한 변화입니다(아래 "구현된 이름 해석"). 4단계는 함수 역할과 호출 그래프(`roles.py`, `ParsedFile.function_roles`)로, 정보만 만들고 아직 아무도 읽지 않아 결과가 달라지지 않습니다. 5~6단계는 구현 전입니다.
+> 상태: **1~5단계 구현됨**(5단계는 일부, "구현된 정책" 참고). 1단계는 표 읽기·점검·예시 시험(`commandtable.py`, `commandtable_data.py`), 2단계는 `strict.py`가 자체 허용 목록 대신 이 표를 쓰는 것(같은 입력 29,360개로 비교해 규칙·수준·줄이 같았고 달라진 것은 `git` 메시지 문구 6건뿐), 3단계는 함수·별칭·경로가 명령 이름을 덮어쓰는 경우를 따라가는 것입니다. 3단계에서 같은 입력의 결과가 달라진 것은 121건이며 모두 의도한 변화입니다(아래 "구현된 이름 해석"). 4단계는 함수 역할과 호출 그래프(`roles.py`, `ParsedFile.function_roles`)로, 정보만 만들고 아직 아무도 읽지 않아 결과가 달라지지 않습니다. 5~6단계는 구현 전입니다.
 > 확인: `python -m paru_analyzer.commandtable --check`(점검과 예시 실행), `--show 이름`(한 명령이 표에 어떻게 적혀 있는지).
 > 관련: `strict.py`(지금의 허용 목록), `ir.py`(`ops`와 `area`), `docs/IR.md`, `docs/ROADMAP.md`의 접근 위치 분석.
 
@@ -144,6 +144,22 @@ sudo, env, time, xargs   exec=@cmd
 - **별칭**: `alias 이름=값`이 있으면 정의한 줄에 `alias-definition`을 보고하고(`alias`나 `alias -p`처럼 목록만 보는 호출은 제외, 읽을 수 없는 피연산자는 보고), 그 파일 어디서든(순서 무관) 그 이름을 호출하면 별칭 자체가 아니라 별칭이 가리키는 명령(호출의 인자를 마지막 명령에 붙여서)을 검사합니다. 값을 읽지 못하면 `dynamic-command`입니다.
 - **`hash -p`와 `shopt -s expand_aliases`**: 표의 `system` 효과(`command-lookup`, `shell-options`)를 각각 `command-lookup-change`, `alias-definition`으로 보고합니다.
 - **아직 안 한 것**: `trap`의 핸들러 문자열 해석과 `trap ... DEBUG`, `enable -n`, `unset -f`/`unalias`, 다른 파일에서 `source`한 함수, `eval`로 만드는 함수 이름, `PATH` 변경(기존 `path-modification`이 따로 잡음). 이 중 `trap`과 `enable`은 아직 표에 없어서 `unknown-command`로만 나옵니다.
+
+## 구현된 정책 (5단계)
+`strict.classify(명령, where, 로컬 함수, 역할)`이 역할(`roles.py`)을 받아서 아래만 판정합니다. 나머지(경로 안의 `area`에 따른 판정, `write`/`delete`/`perm`의 위치 판정)는 기존 규칙(`heuristics.py`)이 계속 맡고, 6단계에서 합칩니다.
+
+| 상황 | 결과 |
+|---|---|
+| 소스 트리의 프로그램(`./x`, `../x`, `build/x`, `$srcdir/x`)을 `build`/`package`에서 실행 | `source-tree-program` (**expected**, 수준을 올리지 않음) |
+| 같은 것을 파싱 시점(최상위 치환), 설치 훅, `unknown` 함수에서 실행 | 예전대로 `unknown-command` / `dynamic-command` (우려) |
+| `fetch`(`@deps`가 아닌 것)나 `upload` 효과가 있는 명령(`curl`, `wget`, `rsync` 원격 인자, `gpg --recv-keys`) | `network-command` (우려). 예전에는 `unknown-command`였던 것 |
+| 표에서 `exec = @none`인 옵션(`rsync -e`, `--rsync-path`) | `inline-code` |
+| `useradd`/`groupadd`/`userdel`/`groupdel`/`usermod`/`groupmod`/`gpasswd`, `modprobe`/`rmmod`/`insmod`, `apparmor_parser` | 설치 훅에서는 알려진 명령(기존 `user-management`, `kernel-module` 규칙이 따로 표시), PKGBUILD에서는 `unknown-command` |
+
+- **`unknown` 역할의 범위**: 설계 문서는 모든 역할을 동시에 가정한다고 했는데, 구현은 **그 파일에서 가능한 역할**로 좁혔습니다. makepkg는 설치 훅을 실행하지 않고 pacman은 빌드 단계를 실행하지 않으므로, PKGBUILD의 `unknown` 함수에 `systemctl`이 있으면 이미 `unknown-command`이고, `.install`의 `unknown` 함수에 `make`가 있어도 마찬가지입니다. 표의 `where`가 이미 그 구분을 합니다. 그래서 `unknown`이 더 엄격해지는 곳은 소스 트리 프로그램의 `expected` 판정입니다.
+- 표에 추가한 명령: `curl`, `wget`, `rsync`, `gendesk`, `desktop-file-edit`, `asar`, `mktemp`, `file`, `strings`, `jq`, `xzcat`/`zcat`/`bzcat`, 그리고 설치 훅에서도 쓰는 읽기 전용 명령(`vercmp`, `tput`, `basename`, `ls`, `head`, `cut`, `tr` 등).
+- 아직 안 한 것: `unreachable-function` 표시, `covers:`에 없는 옵션을 `unknown`으로 보고하는 것, `sed -f`, `trap`·`source`·`.`·`sh`/`bash`에 경로를 주는 경우, `eval`.
+- 함께 고친 오류: `ir.py`의 반복문이 `where` 변수를 덮어써서(2단계 때 생김), 연산이 있는 단계 뒤의 모든 명령이 `unknown-command`로 판정되던 문제.
 
 ## 구현 순서
 1. (**완료**) **표 형식과 읽는 코드**: 이 문서의 형식을 읽고 점검하는 모듈과 `--check`. 이 단계는 동작을 바꾸지 않는다.

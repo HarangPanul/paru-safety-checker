@@ -13,7 +13,7 @@ import shlex
 from typing import NamedTuple
 
 from . import commandtable
-from .models import Finding
+from .models import EXPECTED, Finding
 
 # Which commands are ordinary packaging steps, and what their options and arguments do, is the command table
 # (commandtable_data.py, docs/COMMANDS.md); this module only turns what the table says into findings.
@@ -178,6 +178,24 @@ SYSTEM_EFFECT_FINDINGS = {
 }
 
 
+# A program from the source tree is part of any build, so running one is only shown (docs/COMMANDS.md, policy);
+# these rules are reported as `expected`, not as concerns.
+EXPECTED_RULES = frozenset({"source-tree-program"})
+SOURCE_ROOT = re.compile(r"^\$(?:\{(?:srcdir|pkgdir|startdir)\}|(?:srcdir|pkgdir|startdir)\b)/")
+RELATIVE_PROGRAM = re.compile(r"^(?:\.{1,2}/|[\w@+][\w@+.%-]*/)[^\s]*$")
+
+
+def is_source_tree_program(name: str) -> bool:
+    """`./x`, `../x`, `build/x` and `$srcdir/x`: a file inside the sources or the build, named by a path."""
+    return bool(SOURCE_ROOT.match(name) or (RELATIVE_PROGRAM.match(name) and not name.endswith("/")))
+
+
+def _roles_allow_source_tree(where: str, roles: frozenset | None) -> bool:
+    """Only code that surely runs while building (`build`, `package`) may run the sources' own programs. At parse
+    time, in an install hook, or in a function that may run anywhere (`unknown`), it stays a concern."""
+    return roles is not None and where == "build" and bool(roles) and roles <= {"build", "package"}
+
+
 def _table_key(table: commandtable.Table, name: str) -> str:
     """The table's name for a command: `python3.11` is the `python` entry."""
     if table.lookup(name) is None and INTERPRETERS.match(name):
@@ -187,15 +205,18 @@ def _table_key(table: commandtable.Table, name: str) -> str:
     return name
 
 
-def classify(command: Command, where: str, local_functions: set[str]) -> tuple[str, str] | None:
+def classify(command: Command, where: str, local_functions: set[str], roles: frozenset | None = None) -> tuple[str, str] | None:
     """(rule, message) if the command is not an ordinary packaging step, else None. `where` is "build" for a
-    PKGBUILD and "hook" for an install script."""
+    PKGBUILD and "hook" for an install script. `roles` (roles.py) says where in the file the command is; without
+    it, the policy that depends on the role is not applied."""
     raw = command.name
+    table = commandtable.load()
+    if table.lookup(raw) is None and is_source_tree_program(raw) and _roles_allow_source_tree(where, roles):
+        return "source-tree-program", f"Runs a program from the source tree ({raw})"
     if raw == "__SUB__" or raw.startswith("$"):
         if SEARCH_TOOLCHAIN_VARS.fullmatch(raw):
             return None
         return "dynamic-command", f"Command is built at run time ({raw}), so what runs cannot be reviewed"
-    table = commandtable.load()
     name = raw
     if raw.startswith("/") and table.lookup(raw) is None:
         directory, _, name = raw.rpartition("/")
@@ -218,6 +239,10 @@ def classify(command: Command, where: str, local_functions: set[str]) -> tuple[s
             if condition.kind == "predicate" and not condition.negated and condition.names[0] in PREDICATE_FINDINGS:
                 found, message = PREDICATE_FINDINGS[condition.names[0]]
                 return found, message.format(name=name, arg=inline_flag(command.args) or "")
+        if rule.kind == "exec" and rule.target.kind == "none":
+            return "inline-code", f"{name} is told to run another program"
+        if rule.kind == "upload" or (rule.kind == "fetch" and rule.target.kind != "deps"):
+            return "network-command", f"{name} sends or fetches data over the network"
     entry = table.lookup(key)
     if entry is None or where not in (entry.where or ("build",)):
         return "unknown-command", f"Command not on the allowlist (default-deny): {name}"
@@ -245,7 +270,7 @@ def scan_strict(name: str, source) -> list[Finding]:
     def add(rule: str, message: str, line: int, key: str) -> None:
         if (rule, key) not in seen:
             seen.add((rule, key))
-            findings.append(Finding("info", message, name, line, rule))
+            findings.append(Finding(EXPECTED if rule in EXPECTED_RULES else "info", message, name, line, rule))
 
     table = commandtable.load()
     for function, line in parsed.function_definitions.items():
@@ -274,7 +299,7 @@ def scan_strict(name: str, source) -> list[Finding]:
             if called in aliases:                           # the alias is the definition; what it stands for is what runs
                 checked = [(inner, f" (through the alias {called})") for inner in _alias_commands(aliases[called], command)]
             for each, how in checked:
-                verdict = classify(each, where, local_functions)
+                verdict = classify(each, where, local_functions, parsed.roles_of(step.function))
                 if verdict:
                     rule, message = verdict
                     add(rule, f"{message}{how}: {shown}", step.line, each.name if rule == "unknown-command" else str(step.line))

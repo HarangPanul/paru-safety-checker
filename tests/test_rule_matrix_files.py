@@ -203,7 +203,7 @@ CASES += [
 ]
 
 
-ROUTINE = {"unknown-command", "build-time-download", "dependency-fetch", "registry-install", "vcs-fetch",
+ROUTINE = {"unknown-command", "network-command", "build-time-download", "dependency-fetch", "registry-install", "vcs-fetch",
            "path-modification", "base64-decode", "curl-in-substitution"}
 
 

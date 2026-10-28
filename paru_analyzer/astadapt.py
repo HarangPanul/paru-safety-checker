@@ -53,6 +53,7 @@ class Step(NamedTuple):
     parse_time: list             # commands inside substitutions that run at parse time
     parse_time_substitution: bool
     heredoc: bool                # the command opens a here-document
+    function: str | None = None  # the function it is written in
 
 
 def steps(units_: list) -> list[Step]:
@@ -64,9 +65,9 @@ def steps(units_: list) -> list[Step]:
         if unit.top:
             inside = [c for c in commands if c.inside]
             out.append(Step(unit.line, unit.text, True, False, False, unit.code and unit.ok, [], unit.ok, inside,
-                            unit.substituted, unit.heredoc))
+                            unit.substituted, unit.heredoc, unit.function))
         else:
-            out.append(Step(unit.line, unit.text, False, True, False, False, commands, unit.ok, [], False, unit.heredoc))
+            out.append(Step(unit.line, unit.text, False, True, False, False, commands, unit.ok, [], False, unit.heredoc, unit.function))
     return out
 
 

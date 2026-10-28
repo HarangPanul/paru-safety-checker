@@ -57,7 +57,6 @@ def test_piped_flag_and_unparseable_text():
 
 @pytest.mark.parametrize("body,rule", [
     ("  evilbin --go", "unknown-command"),
-    ("  ./install.sh", "unknown-command"),
     ("  nc -h", "unknown-command"),
     ("  mount -o bind a b", "unknown-command"),
     ("  dd if=/dev/zero of=img", "unknown-command"),
@@ -75,7 +74,6 @@ def test_piped_flag_and_unparseable_text():
     ("  find . -exec bash -c id \\;", "unknown-command"),
     ("  ls | xargs evilbin", "unknown-command"),
     ("  $c$r http://x", "dynamic-command"),
-    ("  \"$srcdir/helper\" --go", "dynamic-command"),
     ("  $(cat cmd) arg", "dynamic-command"),
     ("  python3 -c 'import os; os.system(\"id\")'", "inline-code"),
     ("  perl -e 'system(\"id\")'", "inline-code"),
@@ -190,7 +188,7 @@ def test_arrays_and_multiline_declarations_are_fine():
     ("  systemd-sysusers", set()),
     ("  echo 'hello'", set()),
     ("  make install", {"unknown-command"}),
-    ("  curl https://x", {"unknown-command"}),
+    ("  curl https://x", {"network-command"}),
     ("  python3 setup.py", {"unknown-command"}),
 ])
 def test_install_hook_allowlist(body, expected):

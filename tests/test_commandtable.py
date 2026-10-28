@@ -31,8 +31,13 @@ xdg-desktop-menu xdg-icon-resource xdg-mime
 """.split())
 
 # in the table but not in the old allowlists: git and pacman were special cases in the code, python2/3 stood for a pattern
-BUILD_ONLY_IN_TABLE = {"git", "pacman", "python2", "python3"}
-HOOK_ONLY_IN_TABLE = {"git", "pacman"}
+BUILD_ONLY_IN_TABLE = {"git", "pacman", "python2", "python3"} | set(
+    "asar bzcat curl desktop-file-edit file gendesk jq mktemp rsync strings tput wget xzcat zcat".split())
+HOOK_ONLY_IN_TABLE = {"git", "pacman"} | set("""
+apparmor_parser b2sum basename bzcat cksum cmp curl cut df diff dirname du file gpasswd groupadd groupdel groupmod head insmod jq ls
+md5sum mktemp modprobe nm nproc objdump readelf readlink realpath rmmod rsync sha1sum sha256sum sha512sum stat strings tail tput tr
+uname useradd userdel usermod vercmp wc which wget xzcat zcat
+""".split())
 
 
 def effects(name, *args, piped=False):

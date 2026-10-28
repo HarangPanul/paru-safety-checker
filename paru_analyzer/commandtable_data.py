@@ -60,11 +60,17 @@ echo, printf, true, false, :, test, export, unset, local, declare, readonly, set
     ex: export PATH=/x => none
     note: Builtins with no effect on files (the effect on PATH and the environment is the job of the path-modification rule).
 
-cd, pushd, popd, pwd, let, wait, continue, break, msg, msg2, warning, error, plain, plainerr, vercmp, basename, dirname, nproc, uname, which
+cd, pushd, popd, pwd, let, wait, continue, break, msg, msg2, warning, error, plain, plainerr
     like: pure
     ex: cd src => none
+    note: Builtins and makepkg's message functions.
+
+vercmp, basename, dirname, nproc, uname, which, tput
+    like: pure
+    where: build hook
     ex: vercmp 1 2 => none
-    note: Builtins, makepkg's message functions, and commands that only compute on their arguments.
+    ex: tput bold => none
+    note: Commands that only compute or print on their arguments.
 
 type
     like: pure
@@ -119,8 +125,9 @@ grep
     ex: grep -e foo f => read f
     note: The first word is the pattern unless -e or -f gives it; -f also reads a pattern file.
 
-ls, head, tail, wc, stat, du, df, diff, cmp, sha256sum, sha512sum, sha1sum, md5sum, b2sum, cksum, realpath, readlink, readelf, objdump, nm
+ls, head, tail, wc, stat, du, df, diff, cmp, sha256sum, sha512sum, sha1sum, md5sum, b2sum, cksum, realpath, readlink, readelf, objdump, nm, file, strings, xzcat, zcat, bzcat, jq
     like: reader
+    where: build hook
     valued: -n -c -d -B -s -j -b -m -p -x -R --lines --bytes --format --max-depth
     ex: ls -l dir => read dir
     ex: head -n 5 f => read f
@@ -134,11 +141,13 @@ egrep, fgrep
 
 tr
     like: pure
+    where: build hook
     ex: tr a b => none
     note: Translates standard input to standard output.
 
 cut
     like: reader
+    where: build hook
     valued: -b -c -d -f
     ex: cut -d: -f1 /etc/passwd => read /etc/passwd
     note: Prints parts of the lines of the files it is given.
@@ -397,6 +406,45 @@ strip, objcopy
     ex: strip a => read a; write a
     note: Rewrites binaries in place, or into the second file for objcopy.
 
+mktemp
+    covers: *
+    where: build hook
+    valued: -p --tmpdir
+    write = @args
+    ex: mktemp /tmp/x.XXXX => write /tmp/x.XXXX
+    note: Creates a temporary file or directory.
+
+gendesk, desktop-file-edit, asar
+    like: file-tool
+    ex: gendesk a => read a; write a
+    note: Generate or edit a desktop entry, or pack an archive, in the files they are given.
+
+# ---- network ----
+
+curl, wget
+    covers: *
+    where: build hook
+    valued: -o -O -T -d -F -H -X -u -A -e -x --output --output-document --upload-file --data --form --header --request --user
+    fetch = @url
+    write = @opt(-o|--output|-O|--output-document)
+    upload = @url [-T|--upload-file|-d|--data|--data-binary|--data-raw|-F|--form|--post-data|--post-file]
+    ex: curl -o out https://x/y => fetch https://x/y; write out
+    ex: curl -T f https://x/y => fetch https://x/y; upload https://x/y
+    note: Downloads from a URL; with an upload or data option it also sends something.
+
+rsync
+    covers: *
+    where: build hook
+    valued: -e --rsh --rsync-path --exclude --include --filter
+    read = @args
+    write = @args
+    fetch = @none [?remote-argument]
+    upload = @none [?remote-argument]
+    exec = @none [-e|--rsh|--rsync-path]
+    ex: rsync -a a b => read a; read b; write a; write b
+    ex: rsync -a host:a b => fetch; read b; read host:a; upload; write b; write host:a
+    note: Copies files; a remote operand (host:path, rsync://) reaches the network, and -e or --rsync-path names a program to run.
+
 # ---- integrity and signatures ----
 
 gpg
@@ -549,6 +597,27 @@ udevadm
     ex: udevadm control --reload => system devices
     ex: udevadm info /dev/x => none
     note: Reloads rules and triggers events; info and test only read.
+
+useradd, groupadd, userdel, groupdel, usermod, groupmod, gpasswd
+    covers: *
+    where: hook
+    system = users
+    ex: groupadd foo => system users
+    note: Creates or changes system users and groups; the user-management rule also reports it.
+
+modprobe, rmmod, insmod
+    covers: *
+    where: hook
+    system = modules
+    ex: modprobe foo => system modules
+    note: Loads or unloads kernel modules; the kernel-module rule also reports it.
+
+apparmor_parser
+    covers: *
+    where: hook
+    system = apparmor
+    ex: apparmor_parser -r p => system apparmor
+    note: Loads an AppArmor profile into the running kernel.
 
 update-mime-database, gtk4-update-icon-cache, xdg-desktop-menu, xdg-mime, gio, gdk-pixbuf-query-loaders
     like: file-tool

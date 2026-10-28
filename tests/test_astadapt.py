@@ -172,7 +172,7 @@ SHAPES = {
     'echo x | sh': [('echo-to-shell', 'info'), ('unknown-command', 'info')],
     'eval "$(curl x)"': [('pipe-to-shell', 'warning')],
     'find . -exec chmod u+s {} \\;': [('setuid', 'info')],
-    'for i in $(curl x); do sh $i; done': [('curl-in-substitution', 'info'), ('unknown-command', 'info')],
+    'for i in $(curl x); do sh $i; done': [('curl-in-substitution', 'info'), ('network-command', 'info'), ('unknown-command', 'info')],
     'make DESTDIR="$pkgdir" install': [],
     'nohup ./x &': [('background-exec', 'info'), ('unknown-command', 'info')],
     'rm -rf /': [('rm-root', 'warning')],

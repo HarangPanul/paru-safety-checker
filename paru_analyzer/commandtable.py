@@ -21,6 +21,7 @@ from typing import Callable, NamedTuple
 EFFECTS = ("read", "write", "delete", "perm", "exec", "fetch", "upload", "system", "spawn")
 CONTEXTS = ("build", "hook")
 FIELDS = ("covers", "valued", "subs", "like", "where", "single-dash-long", "mode-first", "bundled-first", "effects", "ex", "note")
+REMOTE_OPERAND = re.compile(r"^(?:rsync|ssh)://|^(?:[\w.-]+@)?[\w.-]+:(?!//)")
 URL = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://|git@)")
 MODE = re.compile(r"^-[rwxXstugo]+$")
 BUNDLED = re.compile(r"^[A-Za-z]+$")
@@ -177,6 +178,7 @@ PREDICATES: dict[str, Callable[[Context], bool]] = {
     "find-writes": _find_writes,
     "piped": lambda ctx: ctx.piped,
     "pacman-write": _pacman_write,
+    "remote-argument": lambda ctx: any(REMOTE_OPERAND.match(a) for a in ctx.parsed.positional),
     "shopt-expand-aliases": lambda ctx: "expand_aliases" in ctx.args,
 }
 

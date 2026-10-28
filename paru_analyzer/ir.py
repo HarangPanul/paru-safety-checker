@@ -290,7 +290,7 @@ def build_ir(files: dict[str, str], findings: list[Finding] | None = None, packa
             final = chain[-1]
             program = strict.normalise(final.name)
             verdict = strict.classify(final, where, local)
-            known = verdict is None or verdict[0] == "inline-code" or (
+            known = verdict is None or verdict[0] in ("inline-code", "network-command") or (
                 verdict[0] == "unknown-command" and (program in TRANSLATED or invocation.interpreter(program)))
             fed_by = [ids[id(c)] for c in pc.upstream() if id(c) in ids]
             unit = f"{name}:(top)" if pc.top else f"{name}:{_innermost(functions, pc.line) or '(top)'}"
@@ -306,17 +306,17 @@ def build_ir(files: dict[str, str], findings: list[Finding] | None = None, packa
                 reason = {"unknown-command": "unknown-program", "dynamic-command": "dynamic-command"}.get(verdict[0], "inline-code")
                 ir["gaps"].append({"file": name, "lines": [pc.line, max(pc.line, pc.end)], "reason": reason, "note": verdict[1], "step": sid})
             for op in ops:
-                where = {"step": sid}
+                at = {"step": sid}
                 if op["op"] == "fetch":
-                    network.append({**where, "url": op["url"], "scheme": _scheme(op["url"]) if op["url"] else None})
+                    network.append({**at, "url": op["url"], "scheme": _scheme(op["url"]) if op["url"] else None})
                 elif op["op"] == "write":
-                    writes.append({**where, "path": op["path"], "area": op["area"]})
+                    writes.append({**at, "path": op["path"], "area": op["area"]})
                 elif op["op"] == "delete":
-                    deletes.append({**where, "path": op["path"], "area": op["area"]})
+                    deletes.append({**at, "path": op["path"], "area": op["area"]})
                 elif op["op"] == "read":
-                    reads.append({**where, "path": op["path"], "area": op["area"]})
+                    reads.append({**at, "path": op["path"], "area": op["area"]})
                 elif op["op"] == "install-pkg":
-                    installs.append({**where, "via": op["via"], "what": op["what"]})
+                    installs.append({**at, "via": op["via"], "what": op["what"]})
             if program in PRIVILEGE or any(v.name in PRIVILEGE for v in chain[:-1]):
                 privilege.append({"step": sid, "program": next(v.name for v in chain if strict.normalise(v.name) in PRIVILEGE)})
 

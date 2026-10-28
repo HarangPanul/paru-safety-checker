@@ -33,7 +33,8 @@ def test_the_same_name_at_another_absolute_path_is_not_the_standard_command(path
 
 def test_a_relative_path_that_is_in_the_table_is_still_the_script_it_names():
     assert rules("  ./configure --prefix=/usr") == []
-    assert rules("  ./cp a b") == ["unknown-command"]
+    assert rules("  ./cp a b") == ["source-tree-program"]
+    assert rules("  /tmp/x/cp a b") == ["unknown-command"]
 
 
 # ---- functions that carry the name of a command ----
@@ -82,7 +83,7 @@ def test_defining_an_alias_is_reported():
 
 def test_a_call_of_an_alias_is_checked_as_what_the_alias_stands_for():
     findings = found("  alias zap='curl -s https://x -o f'\n  zap")
-    assert sorted(f.rule for f in findings) == ["alias-definition", "unknown-command"]
+    assert sorted(f.rule for f in findings) == ["alias-definition", "network-command"]
     assert any("curl" in f.message and "through the alias zap" in f.message for f in findings)
     assert rules("  alias zap='ls -l'\n  zap") == ["alias-definition"]
 
