@@ -54,6 +54,19 @@ def test_other_paths_are_not_the_source_tree():
     assert rules(build("  ./configure --prefix=/usr")) == []
 
 
+# ---- a function that may run anywhere has to be ordinary everywhere ----
+
+def test_a_function_nobody_calls_must_be_ordinary_in_every_role():
+    orphan = "pkgname=x\npkgver=1\n_helper() {\n  %s\n}\nbuild() { :; }\n"
+    assert rules(orphan % "make") == ["unknown-command"]        # build only
+    assert rules(orphan % "cp a b") == []                        # fine in a build and in a hook
+    called = orphan.replace("build() { :; }", "build() { _helper; }")
+    assert rules(called % "make") == []
+    hook = "_helper() {\n  %s\n}\npost_install() { :; }\n"
+    assert rules(hook % "systemctl enable x", "x.install") == ["unknown-command"]
+    assert rules((hook + "post_install() { _helper; }\n").replace("post_install() { :; }\n", "") % "systemctl enable x", "x.install") == []
+
+
 # ---- the network ----
 
 @pytest.mark.parametrize("command", ["curl -o f https://x/y", "wget -q https://x/y", "curl -T f https://x/y",

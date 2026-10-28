@@ -190,6 +190,20 @@ def is_source_tree_program(name: str) -> bool:
     return bool(SOURCE_ROOT.match(name) or (RELATIVE_PROGRAM.match(name) and not name.endswith("/")))
 
 
+def _contexts(where: str, roles: frozenset | None) -> frozenset:
+    """The scripts (the table's `where` names) the command may run in. A function nobody is known to call
+    (`unknown`) may run in any role, so the command has to be an ordinary step in all of them."""
+    if roles is None:
+        return frozenset({where})
+    found = set()
+    for role in roles:
+        if role == "unknown":
+            found |= {"build", "hook"}
+        else:
+            found.add("hook" if role == "hook" else "build")
+    return frozenset(found or {where})
+
+
 def _roles_allow_source_tree(where: str, roles: frozenset | None) -> bool:
     """Only code that surely runs while building (`build`, `package`) may run the sources' own programs. At parse
     time, in an install hook, or in a function that may run anywhere (`unknown`), it stays a concern."""
@@ -229,7 +243,7 @@ def classify(command: Command, where: str, local_functions: set[str], roles: fro
         # a function of this file. If it also has the name of a command this one is checked as the command too,
         # since which of the two runs depends on the order of definitions, which is not followed.
         entry = table.lookup(key)
-        if entry is None or where not in (entry.where or ("build",)):
+        if entry is None or not _contexts(where, roles) <= set(entry.where or ("build",)):
             return None
     for rule, _, _ in table.fired(key, command.args, command.piped):
         if rule.kind == "system" and rule.target.word in SYSTEM_EFFECT_FINDINGS:
@@ -244,7 +258,7 @@ def classify(command: Command, where: str, local_functions: set[str], roles: fro
         if rule.kind == "upload" or (rule.kind == "fetch" and rule.target.kind != "deps"):
             return "network-command", f"{name} sends or fetches data over the network"
     entry = table.lookup(key)
-    if entry is None or where not in (entry.where or ("build",)):
+    if entry is None or not _contexts(where, roles) <= set(entry.where or ("build",)):
         return "unknown-command", f"Command not on the allowlist (default-deny): {name}"
     if entry.subs is not None:
         for effect in table.effects_of(key, command.args, command.piped) or ():

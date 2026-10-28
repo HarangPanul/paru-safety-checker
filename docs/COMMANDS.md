@@ -156,7 +156,7 @@ sudo, env, time, xargs   exec=@cmd
 | 표에서 `exec = @none`인 옵션(`rsync -e`, `--rsync-path`) | `inline-code` |
 | `useradd`/`groupadd`/`userdel`/`groupdel`/`usermod`/`groupmod`/`gpasswd`, `modprobe`/`rmmod`/`insmod`, `apparmor_parser` | 설치 훅에서는 알려진 명령(기존 `user-management`, `kernel-module` 규칙이 따로 표시), PKGBUILD에서는 `unknown-command` |
 
-- **`unknown` 역할의 범위**: 설계 문서는 모든 역할을 동시에 가정한다고 했는데, 구현은 **그 파일에서 가능한 역할**로 좁혔습니다. makepkg는 설치 훅을 실행하지 않고 pacman은 빌드 단계를 실행하지 않으므로, PKGBUILD의 `unknown` 함수에 `systemctl`이 있으면 이미 `unknown-command`이고, `.install`의 `unknown` 함수에 `make`가 있어도 마찬가지입니다. 표의 `where`가 이미 그 구분을 합니다. 그래서 `unknown`이 더 엄격해지는 곳은 소스 트리 프로그램의 `expected` 판정입니다.
+- **`unknown` 역할**: 설계대로 모든 역할을 동시에 가정합니다. 호출되는 곳을 모르는 함수(호출되지 않는 함수, `eval`/변수로만 불리는 함수, 그 함수가 부르는 함수)의 명령은 표의 `where`에서 `build`와 `hook` 둘 다 알려진 명령이어야 통과합니다. 그래서 그런 함수 안의 `make`(build 전용)나 `systemctl`(hook 전용)은 `unknown-command`이고 `cp`는 통과합니다. 소스 트리 프로그램의 `expected` 판정도 받지 못합니다.
 - 표에 추가한 명령: `curl`, `wget`, `rsync`, `gendesk`, `desktop-file-edit`, `asar`, `mktemp`, `file`, `strings`, `jq`, `xzcat`/`zcat`/`bzcat`, 그리고 설치 훅에서도 쓰는 읽기 전용 명령(`vercmp`, `tput`, `basename`, `ls`, `head`, `cut`, `tr` 등).
 - 아직 안 한 것: `unreachable-function` 표시, `covers:`에 없는 옵션을 `unknown`으로 보고하는 것, `sed -f`, `trap`·`source`·`.`·`sh`/`bash`에 경로를 주는 경우, `eval`.
 - 함께 고친 오류: `ir.py`의 반복문이 `where` 변수를 덮어써서(2단계 때 생김), 연산이 있는 단계 뒤의 모든 명령이 `unknown-command`로 판정되던 문제.
