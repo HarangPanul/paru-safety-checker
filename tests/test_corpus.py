@@ -261,3 +261,46 @@ def test_iter_records_accepts_a_string_path(tmp_path):
     file.write_text('{"name": "a"}\n{"name": "b"')
     assert [r["name"] for r in corpus.iter_records(str(file))] == ["a"]
     assert list(corpus.iter_records(str(tmp_path / "missing"))) == []
+
+
+def write_corpus(folder, records):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / corpus.CORPUS_NAME).write_text("".join(json.dumps(r) + "\n" for r in records))
+
+
+GOOD = "pkgname=x\nbuild() {\n  make\n}\n"
+BAD = "pkgname=y\nbuild() {\n  make\n  fi\n}\n"
+
+
+def test_parse_report_counts_unread_statements(tmp_path):
+    write_corpus(tmp_path, [{"name": "a", "files": {"PKGBUILD": GOOD}}, {"name": "b", "files": {"PKGBUILD": BAD, "README": "x"}},
+                            {"name": "c", "error": "boom"}])
+    report = corpus.parse_report(corpus.corpus_file(tmp_path))
+    assert report["files"] == 2 and report["with_unread"] == 1 and report["tokenizer_failed"] == 0
+    assert "unexpected `fi`" in report["reasons"] and report["examples"][0].startswith("b PKGBUILD:4")
+    assert "with unread statements" in corpus.format_parse_report(report)
+
+
+def test_parse_report_tokenizer_failure(tmp_path):
+    write_corpus(tmp_path, [{"name": "a", "files": {"PKGBUILD": "echo 'open\n"}}])
+    assert corpus.parse_report(corpus.corpus_file(tmp_path))["tokenizer_failed"] == 1
+
+
+def test_parse_command_reads_the_folder_and_explains_a_missing_file(tmp_path, capsys):
+    assert corpus.main(["parse", "--corpus", str(tmp_path / "nothing")]) == 2
+    assert "no corpus file at" in capsys.readouterr().err
+    write_corpus(tmp_path / "c", [{"name": "e", "error": "x"}])
+    assert corpus.main(["parse", "--corpus", str(tmp_path / "c")]) == 2
+    assert "no collected packages" in capsys.readouterr().err
+    write_corpus(tmp_path / "ok", [{"name": "a", "files": {"PKGBUILD": GOOD}}])
+    assert corpus.main(["parse", "--corpus", str(tmp_path / "ok")]) == 0
+    assert "shell files (PKGBUILD, *.install): 1" in capsys.readouterr().out
+
+
+def test_parse_report_against_bash(tmp_path):
+    import shutil
+    if not shutil.which("bash"):
+        pytest.skip("bash not installed")
+    write_corpus(tmp_path, [{"name": "a", "files": {"PKGBUILD": GOOD}}, {"name": "b", "files": {"PKGBUILD": BAD}}])
+    bash = corpus.parse_report(corpus.corpus_file(tmp_path), with_bash=True)["bash"]
+    assert bash["agree"] == 2 and bash["ours_too_lenient_count"] == 0 and bash["ours_too_strict_count"] == 0

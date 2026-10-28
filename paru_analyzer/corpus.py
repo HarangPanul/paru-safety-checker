@@ -30,6 +30,7 @@ from typing import Callable, Iterator
 
 from .fetch import FetchError, clone_package, collect_files, valid_package_name
 from .heuristics import level_of, scan
+from .parsed import ParsedFile
 
 META_URL = "https://aur.archlinux.org/packages-meta-ext-v1.json.gz"
 META_NAME = "packages-meta-ext-v1.json.gz"
@@ -298,6 +299,80 @@ def format_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+def parse_report(path: Path, with_bash: bool = False, examples: int = 10) -> dict:
+    """How well the shell parser reads the collected PKGBUILD and .install files: files whose tokenizer failed,
+    files with statements it could not read (and why), and, with `with_bash`, where it disagrees with `bash -n`
+    (that command only checks syntax; it never runs the file)."""
+    report = {"files": 0, "tokenizer_failed": 0, "with_unread": 0, "unread_statements": 0, "reasons": Counter(),
+              "examples": [], "bash": None}
+    if with_bash:
+        report["bash"] = {"agree": 0, "ours_too_lenient": [], "ours_too_strict": [], "unavailable": 0}
+    for record in iter_records(path):
+        if "files" not in record:
+            continue
+        for name, text in record["files"].items():
+            if name != "PKGBUILD" and not name.endswith(".install"):
+                continue
+            parsed = ParsedFile(name, text)
+            report["files"] += 1
+            if not parsed.pre.ok:
+                report["tokenizer_failed"] += 1
+                report["reasons"]["tokenizer: " + parsed.pre.error] += 1
+            if parsed.ast.errors:
+                report["with_unread"] += 1
+                report["unread_statements"] += len(parsed.ast.errors)
+                for _, message in parsed.ast.errors:
+                    report["reasons"][message] += 1
+                if len(report["examples"]) < examples:
+                    line, message = parsed.ast.errors[0]
+                    report["examples"].append(f"{record['name']} {name}:{line}: {message}")
+            if with_bash:
+                try:
+                    bash_ok = subprocess.run(["bash", "-n"], input=text.encode(), capture_output=True, timeout=20).returncode == 0
+                except (OSError, subprocess.SubprocessError):
+                    report["bash"]["unavailable"] += 1
+                    continue
+                if bash_ok == parsed.ast.ok:
+                    report["bash"]["agree"] += 1
+                else:
+                    target = "ours_too_strict" if bash_ok else "ours_too_lenient"
+                    if len(report["bash"][target]) < examples:
+                        report["bash"][target].append(f"{record['name']} {name}")
+                    else:
+                        report["bash"][target].append(None)
+    if report["bash"]:
+        for key in ("ours_too_lenient", "ours_too_strict"):
+            kept = [x for x in report["bash"][key] if x]
+            report["bash"][key + "_count"] = len(report["bash"][key])
+            report["bash"][key] = kept
+    return report
+
+
+def format_parse_report(report: dict) -> str:
+    total = report["files"]
+    pct = lambda n: f"{100 * n / total:.1f}%" if total else "-"
+    lines = [f"shell files (PKGBUILD, *.install): {total}",
+             f"  tokenizer failed:       {report['tokenizer_failed']:5} ({pct(report['tokenizer_failed'])})",
+             f"  with unread statements: {report['with_unread']:5} ({pct(report['with_unread'])}), {report['unread_statements']} statements"]
+    for message, count in report["reasons"].most_common(15):
+        lines.append(f"    {count:5}  {message}")
+    lines.extend(f"  example: {e}" for e in report["examples"])
+    bash = report["bash"]
+    if bash:
+        lines.append("agreement with `bash -n` (syntax check only):")
+        lines.append(f"  agree {bash['agree']}, bash unavailable {bash['unavailable']}")
+        lines.append(f"  we accept, bash rejects (too lenient, can hide code): {bash['ours_too_lenient_count']}")
+        lines.extend(f"      {x}" for x in bash["ours_too_lenient"])
+        lines.append(f"  we reject, bash accepts (parser gap): {bash['ours_too_strict_count']}")
+        lines.extend(f"      {x}" for x in bash["ours_too_strict"])
+    return "\n".join(lines)
+
+
+def corpus_file(folder: Path) -> Path:
+    """The records file of a corpus folder (`--corpus data/corpus`); a path to the file itself also works."""
+    return folder if folder.is_file() else folder / CORPUS_NAME
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m paru_analyzer.corpus")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -328,7 +403,24 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--examples", type=int, default=3)
     m.add_argument("--json", type=Path, help="also write the full report as JSON")
 
+    q = sub.add_parser("parse", help="report how well the shell parser reads the collected files")
+    q.add_argument("--corpus", type=Path, default=Path("data/corpus"))
+    q.add_argument("--bash", action="store_true", help="also compare with `bash -n` (needs bash; never runs the files)")
+    q.add_argument("--examples", type=int, default=10)
+
     args = parser.parse_args(argv)
+    if args.command in ("measure", "export", "parse"):
+        records = corpus_file(args.corpus)
+        if not records.is_file():
+            print(f"no corpus file at {records}: run `collect` first, or pass the folder that holds {CORPUS_NAME} with --corpus",
+                  file=sys.stderr)
+            return 2
+        if args.command != "export" and not any("files" in r for r in iter_records(records)):
+            print(f"{records} has no collected packages (every record is an error or the file is empty)", file=sys.stderr)
+            return 2
+    if args.command == "parse":
+        print(format_parse_report(parse_report(corpus_file(args.corpus), args.bash, args.examples)))
+        return 0
     if args.command == "collect":
         meta = load_meta(args.meta, cache=args.out / META_NAME)
         names = read_names(args.names) if args.names else None
@@ -342,9 +434,9 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
     if args.command == "export":
-        print(f"wrote {export(args.corpus / CORPUS_NAME, args.out, args.label)} packages to {args.out / args.label}")
+        print(f"wrote {export(corpus_file(args.corpus), args.out, args.label)} packages to {args.out / args.label}")
         return 0
-    report = measure(args.corpus / CORPUS_NAME, args.examples)
+    report = measure(corpus_file(args.corpus), args.examples)
     print(format_report(report))
     if args.json:
         args.json.write_text(json.dumps(report, indent=2))

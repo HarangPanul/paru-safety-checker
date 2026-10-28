@@ -162,6 +162,16 @@ python -m paru_analyzer.corpus collect --out data/corpus --count 500
 python -m paru_analyzer.corpus measure --corpus data/corpus --examples 3
 ```
 
+```sh
+# 3) 구문 파서가 수집한 PKGBUILD/.install을 얼마나 읽는지: 토크나이저 실패, 읽지 못한 문장과 이유, 예시
+python -m paru_analyzer.corpus parse --corpus data/corpus
+# bash -n(문법 검사만, 실행하지 않음)과 비교: 우리가 관대한 경우(코드가 숨을 수 있음)와 엄격한 경우(파서 결함)를 따로 셉니다
+python -m paru_analyzer.corpus parse --corpus data/corpus --bash
+```
+
+`--corpus`에는 `collect --out`으로 지정한 **폴더**를 줍니다(그 안의 `pkgbuilds.jsonl`을 읽습니다). 파일이 없거나 수집된 패키지가 없으면
+이유를 알려 주고 종료 코드 2로 끝납니다.
+
 대상을 다르게 고르거나 폴더로 내보낼 수도 있습니다.
 
 ```sh
