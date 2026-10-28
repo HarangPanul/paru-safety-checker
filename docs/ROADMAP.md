@@ -64,6 +64,48 @@ Open questions: where to run the observation (the user's own build vs a separate
 install, which would make it a pre-install defence at the cost of build time and dependencies); how to
 record root-run hooks; how the AI should use the "not predicted" list to improve its next prediction.
 
+## Pause before network access during install (idea, not decided, not started)
+
+Idea: while the package builds or installs, stop just before it fetches from or sends to the internet and ask
+the user. Unlike observation (above), this can block, so it is a defence and not only a report.
+
+Three stages together:
+1. before install: static analysis and the AI show the predicted access;
+2. during install: run inside a sandbox; a connection the prediction does not cover is paused and put to the
+   user before it happens; file writes and sensitive reads are handled by policy, not by asking;
+3. after install: report the difference between prediction and observation.
+
+Ways to pause (candidates):
+| Way | Note |
+|---|---|
+| network namespace (`bwrap --unshare-net`) with only a proxy attached | cannot be bypassed by ignoring `http_proxy`; HTTPS shows the host (SNI) only |
+| seccomp user notification on `connect()` | stops exactly before the call; more work to build |
+| plain proxy through environment variables | bypassed by direct sockets and `--noproxy`; not a defence |
+| `strace` | observes only, cannot stop; not a defence |
+
+Problems to design around:
+- Asking for every connection teaches the user to click "allow". A normal build fetches sources, runs `git clone`,
+  `npm install`, `cargo fetch`: dozens to hundreds of connections.
+- Direction (upload or download) is not known at connect time; only the destination is. Asking per connection,
+  not per request.
+- It cannot stop an upload to a host the user allowed (a secret pushed to an allowed code host), nor data
+  carried in DNS names.
+- The build waits for the answer; long unattended builds need a no-prompt policy.
+- Root-run `.install` hooks need separate handling. Sandbox escape and kernel bugs are out of scope.
+
+Keeping the questions few:
+- Destinations the static analysis predicted (`source=` URLs, hosts on command lines) are approved once, before
+  install, and then pass silently. Only a connection outside the prediction is paused.
+- Registries a build tool normally uses (crates.io, the npm registry, PyPI, the Go proxy, ...) are asked once per
+  package as a group.
+- Choices: allow once, allow this host, block, abort the install. A blocked connection that breaks the build is
+  reported as such.
+- Every attempt is recorded whether allowed or not and goes into the after-install report.
+- An unattended mode blocks everything outside the prediction and only reports it.
+
+Files: asking per write is too frequent. Use sandbox policy instead (writes only under `$srcdir`/`$pkgdir`;
+reads of sensitive places such as `~/.ssh` blocked, the attempt recorded).
+
 ## Other recorded items
 - Run the cross-check against bash (`crosscheck.py`) on the syntax tree instead of the lexer's lines, and let the
   pattern rules read units made from the tree (they still read `preprocess.py`'s lines, a lexical view).
