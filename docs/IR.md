@@ -1,6 +1,18 @@
 # 중간 표현(IR) 스키마 초안
 
-> 상태: **초안(구현 전)**. 아직 코드에는 없고, 아래 "현재 출처" 열은 지금 있는 코드에서 채울 수 있는지를 적은 것입니다.
+> 상태: **최소 구현 있음(`ir_version` 1, `paru_analyzer/ir.py`)**. 아래 스키마가 설계이고, 구현과 다른 점은 바로 아래 "구현에서 달라진 점"에 적었습니다.
+> 만드는 법: `build_ir(files, findings, package)` 또는 `python -m paru_analyzer.ir 패키지폴더`(JSON 출력). 시험은 `tests/test_ir.py`.
+> 아직 없는 것: 사람용/AI용 렌더링, `in_official_repo` 조회, `heredoc-body` 빈틈, 분기(`if`/`case`) 단위의 units.
+
+### 구현에서 달라진 점
+- `declarations`는 딕셔너리가 아니라 목록입니다: `{file, name, kind: array|scalar, value, line}`. 모든 파일의 것이 들어갑니다.
+- `statements`가 추가됐습니다: 구문 트리의 모든 문장을 `{file, lines, kind: declaration|step|gap}`로 적습니다. 덮개 불변식은 이것으로 검사합니다.
+- **덮개 불변식의 정의**: 쉘 파일에서 빈 줄, 주석, 구조만 담은 줄(`fi`, `}`, `name() {`, `if ...; then`, `case ... in` 등)을 뺀 모든 줄은 어떤 `statements` 또는 `gaps`의 줄 범위 안에 있습니다. heredoc 본문과 여러 줄 문자열은 그 문장의 범위에 포함됩니다. `ir.uncovered_lines(ir, files)`가 위반한 줄을 돌려줍니다.
+- `known`은 "허용 목록에 있다"가 아니라 "IR이 이 프로그램을 번역할 수 있다"입니다(`curl`은 허용 목록에 없어도 `fetch` op로 번역되므로 known). 번역표에 없거나 변수로 만든 이름이면 `known: false`이고 `gaps`에 `unknown-program`/`dynamic-command`로 들어갑니다. `python -c` 같은 인라인 코드는 known이지만 `inline-code` 빈틈입니다.
+- 단계에 `lines`(문장의 시작과 끝 줄), `substitution`(`$(...)` 안인지), `inside`(`sh -c`/`eval` 문자열에서 나왔다면 바깥 단계의 id)가 있습니다.
+- `ops`에는 위 표의 `fetch`, `exec`, `read`, `write`, `delete`, `chmod`, `install-pkg`, `decode`, `spawn`, `other`가 모두 구현돼 있습니다. `exec`의 `target`은 `stdin`, `string`(`-c`/`eval`), 스크립트 경로 중 하나입니다.
+- `files`에는 `(omitted-files)`에 적힌 심볼릭 링크, 바이너리, 크기 제한으로 빠진 파일도 이름으로 들어가고(`kind: symlink|binary|omitted`), `gaps`에도 기록됩니다.
+
 
 ## 목적
 PKGBUILD 한 묶음을 **한 번 파싱한 사실의 목록**으로 만들고, 거기서 세 가지 출력을 만듭니다.
@@ -123,7 +135,7 @@ PKGBUILD 한 묶음을 **한 번 파싱한 사실의 목록**으로 만들고, �
 | `ops` (write/delete/read) | `fileaccess.file_accesses` | 있음 (근사) |
 | `ops` (fetch/exec/decode) | `cmdrules.command_tags`, `fetch_then_execute` | 부분 (정리 필요) |
 | `effects` | `activity.build_activity` | 있음 (자료구조 정리 필요) |
-| `gaps` | `unparsed_lines`, `dynamic-command`, `overlong-line`, `_file_gap` | 흩어져 있음 → 한 곳으로 모으기 |
+| `gaps` | `ir.build_ir`가 `Unparsed`, 분류 결과(`strict.classify`), 긴 줄, 잘림, 빠진 파일을 한 곳으로 모음 | 구현됨 |
 | `marks` | `heuristics.scan` 결과(`Finding`) | 있음 |
 
 ## 렌더링 (같은 IR에서 세 가지 출력)

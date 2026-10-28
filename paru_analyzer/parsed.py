@@ -39,6 +39,8 @@ class ParsedCommand(NamedTuple):
     top: bool                       # outside every function: runs when the file is merely parsed
     siblings: tuple                 # every Command extracted from the same line, in order
     stage_map: dict | None = None   # segment -> commands, built once per line and shared by its commands
+    end: int = 0                    # last line of the statement
+    parent: Command | None = None   # the command whose `sh -c` / `eval` string this one came from
 
     def upstream(self) -> list[Command]:
         """Commands of the earlier stages of the pipeline this command receives its input from."""
@@ -180,7 +182,7 @@ def collect_arrays(defs, overridden: list | None = None) -> dict[str, Array]:
 MAX_PAYLOAD_DEPTH = 4
 
 
-def _emit(commands: tuple, text: str, top: bool, out: list, depth: int) -> None:
+def _emit(commands: tuple, text: str, top: bool, out: list, depth: int, end: int = 0, parent: Command | None = None) -> None:
     """Add the commands of one unit as ParsedCommands, then the commands inside any `sh -c STR` /
     `eval STR` they start. `commands` is ((Command, line), ...)."""
     plain = tuple(command for command, _ in commands)
@@ -188,7 +190,7 @@ def _emit(commands: tuple, text: str, top: bool, out: list, depth: int) -> None:
     for command in plain:
         stage_map.setdefault(command.segment, []).append(command)
     for command, line in commands:
-        out.append(ParsedCommand(command, line, text, top, plain, stage_map))
+        out.append(ParsedCommand(command, line, text, top, plain, stage_map, end, parent))
     if depth >= MAX_PAYLOAD_DEPTH:
         return
     for command, line in commands:
@@ -199,7 +201,7 @@ def _emit(commands: tuple, text: str, top: bool, out: list, depth: int) -> None:
                 if not ok:                           # not valid shell: read what can be read, loosely
                     inner = astadapt.loose(payload_text) or inner
                 if inner:
-                    _emit(tuple((c, line) for c in inner), text, top, out, depth + 1)
+                    _emit(tuple((c, line) for c in inner), text, top, out, depth + 1, end, command)
 
 
 class ParsedFile:
@@ -278,8 +280,13 @@ class ParsedFile:
     def _analysis(self) -> tuple:
         out: list[ParsedCommand] = []
         for unit in self._units[0]:
-            _emit(unit.commands, unit.text, unit.top, out, 0)
+            _emit(unit.commands, unit.text, unit.top, out, 0, unit.end)
         return tuple(out), self._units[1]
+
+    @cached_property
+    def code_units(self) -> tuple:
+        """Every statement of a shell file as astadapt.Unit (commands, lines, where it runs), in source order."""
+        return self._units[0]
 
     @cached_property
     def steps(self) -> tuple:

@@ -126,6 +126,18 @@ paru-analyzer -S some-aur-package
 > - 읽지 못한 문장은 `Unparsed`로 표시되어 그 줄만 정규식 예비 규칙이 맡습니다. 그 문장 안에 숨은 대입(배열 포함)은 읽지 못합니다.
 > - 텍스트로 남은 곳은 어휘 단계의 출력뿐입니다. 정규식 규칙이 매칭하는 줄(`units`), AI에게 보여주는 화면, bash와의 교차 검사(`crosscheck.py`)가 `preprocess.py`의 결과를 씁니다.
 
+### 중간 표현 (`ir.py`, [docs/IR.md](docs/IR.md))
+
+한 번 파싱한 결과를 **사실의 목록**(파일, 선언, 소스, 의존성, 단위, 단계와 그 `ops`, 효과, 읽지 못한 구간 `gaps`, 규칙의 `marks`)으로 만듭니다.
+같은 데이터에서 사람용 요약, AI 입력, 규칙이 나오게 하려는 것이 목적이고, 지금은 데이터를 만드는 부분까지 있습니다.
+
+```sh
+python -m paru_analyzer.ir data/targets/benign/some-package   # PKGBUILD가 있는 폴더 → JSON
+```
+
+모든 항목에 파일과 줄이 있고, 읽지 못한 부분은 추측하지 않고 `gaps`에 남깁니다. 쉘 파일의 코드 줄은 모두 어떤 문장이나 빈틈에 속해야 한다는
+덮개 불변식을 시험으로 검사합니다. IR 안의 문자열은 모두 패키지 작성자가 쓴 데이터이므로 명령으로 취급하지 않습니다.
+
 ### 허용 목록 방식(default-deny)
 
 정규식은 "알려진 나쁜 패턴"만 찾으므로 새 수법은 통과합니다. 그래서 `paru_analyzer/strict.py`가 PKGBUILD와

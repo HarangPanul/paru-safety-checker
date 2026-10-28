@@ -37,6 +37,7 @@ class Unit(NamedTuple):
     substituted: bool = False   # a substitution is run by the unit (its commands follow the main ones, `inside=True`)
     ok: bool = True             # False for a statement the grammar could not read; `text` is then its source
     function: str | None = None # the function it is defined in
+    end: int = 0                # last line of the statement
 
 
 class Step(NamedTuple):
@@ -298,16 +299,25 @@ def _is_declaration(node) -> bool:
     return not node.words or node.words[0].value in DECLARATIONS
 
 
+def _last_line(node) -> int:
+    """The last line of a statement, here-document bodies and their terminator included."""
+    end = node.end
+    for inner in shast.walk(node):
+        if isinstance(inner, HereDoc):
+            end = max(end, inner.body_line + len(inner.body))
+    return end
+
+
 def _unit(node, line: int, top: bool, function: str | None = None) -> Unit:
     collector = _Collector(_Counter(), False)
     collector.statement(node)
     substituted = bool(collector.subs)
     collector.drain()
     return Unit(line, render(node), top, tuple((command, line) for command, _ in collector.found),
-                _has_heredoc(node), not _is_declaration(node), substituted, True, function)
+                _has_heredoc(node), not _is_declaration(node), substituted, True, function, _last_line(node))
 
 
-def _header(words, redirects, text: str, line: int, top: bool, function: str | None = None) -> Unit | None:
+def _header(words, redirects, text: str, line: int, top: bool, function: str | None = None, end: int = 0) -> Unit | None:
     """The substitutions in the part of a compound command that is not a statement (a `for` list, a
     `case` word, the target of a redirection): they run, so their commands are reported."""
     collector = _Collector(_Counter(), False)
@@ -320,7 +330,7 @@ def _header(words, redirects, text: str, line: int, top: bool, function: str | N
     if not collector.subs:
         return None
     collector.drain()
-    return Unit(line, text, top, tuple((command, line) for command, _ in collector.found), substituted=True, function=function)
+    return Unit(line, text, top, tuple((command, line) for command, _ in collector.found), substituted=True, function=function, end=end)
 
 
 def units(script: Script) -> tuple[list[Unit], set[int]]:
@@ -343,34 +353,36 @@ def units(script: Script) -> tuple[list[Unit], set[int]]:
                 visit(operand, function)
         elif isinstance(node, (Group, Subshell)):
             visit(node.body, function)
-            _add(_header((), node.redirects, render(node), node.line, top, function))
+            _add(_header((), node.redirects, render(node), node.line, top, function, node.end))
         elif isinstance(node, If):
             for condition, body in node.branches:
                 visit(condition, function)
                 visit(body, function)
             if node.orelse is not None:
                 visit(node.orelse, function)
-            _add(_header((), node.redirects, render(node), node.line, top, function))
+            _add(_header((), node.redirects, render(node), node.line, top, function, node.end))
         elif isinstance(node, While):
             visit(node.condition, function)
             visit(node.body, function)
-            _add(_header((), node.redirects, render(node), node.line, top, function))
+            _add(_header((), node.redirects, render(node), node.line, top, function, node.end))
         elif isinstance(node, For):
-            _add(_header(node.items or (), node.redirects, render(node), node.line, top, function))
+            _add(_header(node.items or (), node.redirects, render(node), node.line, top, function, node.end))
             visit(node.body, function)
         elif isinstance(node, Case):
-            _add(_header([node.word, *(p for c in node.clauses for p in c.patterns)], node.redirects, render(node), node.line, top, function))
+            _add(_header([node.word, *(p for c in node.clauses for p in c.patterns)], node.redirects, render(node), node.line, top, function, node.end))
             for clause in node.clauses:
                 visit(clause.body, function)
         elif isinstance(node, FunctionDef):
             visit(node.body, node.name)
         elif isinstance(node, Conditional):
-            _add(_header(node.words, node.redirects, render(node), node.line, top, function))
+            _add(_header(node.words, node.redirects, render(node), node.line, top, function, node.end)
+                 or Unit(node.line, render(node), top, (), function=function, end=node.end))
         elif isinstance(node, ArithCommand):
-            _add(_header((), node.redirects, render(node), node.line, top, function))
+            _add(_header((), node.redirects, render(node), node.line, top, function, node.end)
+                 or Unit(node.line, render(node), top, (), function=function, end=node.end))
         elif isinstance(node, Unparsed):
             bad.update(range(node.line, node.end + 1))
-            found.append(Unit(node.line, node.text, top, (), ok=False, function=function))
+            found.append(Unit(node.line, node.text, top, (), ok=False, function=function, end=node.end))
 
     def _add(unit: Unit | None) -> None:
         if unit is not None:

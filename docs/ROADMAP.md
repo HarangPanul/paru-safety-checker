@@ -197,7 +197,8 @@ history is to be checked; a rewrite breaks the link to the previous version but 
   old/new route differences).
 - Split facts from marks in the level computation (external-source, prebuilt-source, symlink, binary-in-repo,
   unanalyzed-file, unpinned-vcs as facts).
-- Minimal IR implementation: unified gaps, steps/effects, a coverage-invariant test; add notes on one step
+- IR (`ir.py`) has its data, gaps, effects and coverage test; still to do: render it for the person and for the model
+  (gaps first, then marks, effects, sources, units, the original), look up `in_official_repo`, add notes on one step
   becoming several ops and on op dataflow to `docs/IR.md`.
 - Idea: per-function natural-language summaries from the AI, shown next to the original body, never in place
   of it (the rules keep running on the original; check the summary against the static facts; treat the body
