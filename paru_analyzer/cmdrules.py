@@ -256,9 +256,16 @@ HOME_FILE = re.compile(r"^(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)/(?:\.|\w)")
 
 
 def account_write(ctx: Ctx) -> bool:
-    """Writes sudoers or the account databases. Removing one file under /etc/sudoers.d is what an uninstall
-    hook does with the rule the package added, and takes privileges away rather than adding them."""
+    """Writes sudoers or the account databases, or deletes more than one sudoers.d file. Deleting a single
+    file there is `sudoers_remove`: still reported, but a lower level than writing a rule."""
     return any(ACCOUNT_FILES.match(p) and not (verb == "delete" and OWN_SUDOERS_FILE.match(p)) for verb, p in changed(ctx))
+
+
+def sudoers_remove(ctx: Ctx) -> bool:
+    """Deletes one file under /etc/sudoers.d. An uninstall hook does this with the rule the package added, but
+    a sudoers file can also hold a restriction (`Defaults`, a denied command) or belong to another package or
+    to the administrator, and nothing here can tell whose it is, so it is never silent."""
+    return any(verb == "delete" and OWN_SUDOERS_FILE.match(p) for verb, p in changed(ctx))
 
 
 def home_delete(ctx: Ctx) -> bool:
@@ -372,6 +379,8 @@ CMD_RULES: tuple[CmdRule, ...] = (
     CmdRule("exec-from-tmp", "caution", "Makes executable or runs files from a world-writable directory", exec_from_temp),
     CmdRule("kernel-module", "caution", "Loads or unloads kernel modules", _named("insmod", "rmmod", "modprobe")),
     CmdRule("setcap", "caution", "Grants file capabilities", _named("setcap")),
+    CmdRule("sudoers-remove", "caution",
+            "Deletes a file under /etc/sudoers.d (it may hold a restriction, or belong to someone else)", sudoers_remove),
     CmdRule("apparmor-unload", "caution", "Unloads an AppArmor profile", apparmor_unload),
     CmdRule("home-delete", "caution", "Deletes files in the user's home", home_delete),
     CmdRule("install-hook-persistence", "caution", "Install hook sets up persistence (cron, services, shell rc)",

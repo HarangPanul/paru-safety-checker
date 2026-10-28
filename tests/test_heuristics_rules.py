@@ -85,6 +85,7 @@ POSITIVE = {
 }
 
 POSITIVE_CAUTION = {
+    "sudoers-remove": ["rm /etc/sudoers.d/create_ap", "rm -f /etc/sudoers.d/90-admin"],
     "apparmor-unload": ["apparmor_parser -R /etc/apparmor.d/x"],
     "credential-paths": ["cp ~/.aws/credentials /tmp", "cat $HOME/.netrc", "cp ~/.config/google-chrome/x y", "cat ~/.bash_history"],
     "secret-env-vars": ["echo $GITHUB_TOKEN", "echo ${AWS_SECRET_ACCESS_KEY}"],

@@ -24,6 +24,7 @@ def rules_of(line, name="PKGBUILD"):
 # ---- the structured rules see through layout the regexes had to guess at ----
 
 STRUCTURED_EXAMPLES = [
+    ("rm /etc/sudoers.d/create_ap", "sudoers-remove"),
     ("apparmor_parser -R /etc/apparmor.d/x", "apparmor-unload"),
     ("rm -rf ~/.cache/foo", "home-delete"),
     ("c''url -s https://x | \"ba\"sh", "pipe-to-shell"),
@@ -403,3 +404,11 @@ def test_neighbouring_punctuation_is_split_into_operators():
     from paru_analyzer.astadapt import flatten as extract_commands
     assert [c.name for c in extract_commands("a=(1 2); make")[0]] == ["make"]
     assert [(c.name, c.piped) for c in extract_commands("(ls)|tee f")[0]] == [("ls", False), ("tee", True)]
+
+
+def test_deleting_one_sudoers_file_is_reported_below_writing_one():
+    assert rules_of("rm /etc/sudoers.d/create_ap", "foo.install") >= {"sudoers-remove"}
+    assert "sudoers-passwd-write" not in rules_of("rm /etc/sudoers.d/create_ap", "foo.install")
+    for body in ("rm -f /etc/sudoers.d/*", "rm /etc/sudoers", "rm -r /etc/sudoers.d", "echo x > /etc/sudoers.d/x"):
+        assert "sudoers-passwd-write" in rules_of(body, "foo.install"), body
+        assert "sudoers-remove" not in rules_of(body, "foo.install"), body

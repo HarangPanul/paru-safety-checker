@@ -168,6 +168,8 @@ RULES: tuple[Rule, ...] = (
     _r("sudoers-passwd-write", "danger",
        _WRITE + r"[^\n]*" + _ABS + r"/etc/(?:sudoers(?:\.d)?|passwd|shadow|gshadow|group)\b",
        "Writes to sudoers or the account databases", scope="code"),
+    _r("sudoers-remove", "caution", r"\b(?:rm|unlink)\b[^\n]*" + _ABS + r"/etc/sudoers\.d/[^/\s*?\[\"']+",
+       "Deletes a file under /etc/sudoers.d (it may hold a restriction, or belong to someone else)", scope="code", fallback=True),
     _r("uid0-user", "danger", r"\b(?:useradd|usermod|adduser)\b[^\n]*(?:\s-\w*u\s*0\b|--uid[= ]0\b)",
        "Creates or changes a user to UID 0", scope="code"),
     _r("setuid-shell", "danger",
