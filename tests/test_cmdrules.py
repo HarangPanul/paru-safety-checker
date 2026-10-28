@@ -309,13 +309,13 @@ def test_upstream_tags_match_the_upstream_list():
     ("{ curl x; } | sh", ["curl"]),
     ("(cd y; curl x) | sh", ["curl", "cd"]),
     ("{ curl x; echo; } | sh", ["echo", "curl"]),
-    ("curl x | (cd y; sh)", ["cd", "curl"]),
-    ("curl x | { cd y; sh; }", ["cd", "curl"]),
+    ("curl x | (cd y; sh)", ["curl"]),             # `cd` shares sh's stage: it does not feed it
+    ("curl x | { cd y; sh; }", ["curl"]),
 ])
 def test_groups_do_not_cut_the_pipeline(text, upstream_of_sh):
     parsed = ParsedFile("PKGBUILD", f"build() {{\n  {text}\n}}\n")
     sh = [pc for pc in parsed.commands if pc.command.name == "sh"][0]
-    assert [c.name for c in sh.upstream()] == upstream_of_sh
+    assert sorted(c.name for c in sh.upstream()) == sorted(upstream_of_sh)
 
 
 # ---- variables the file assigns once ----

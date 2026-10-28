@@ -86,6 +86,7 @@ class ProcSub(Node):
 class Arith(Node):
     raw: str                        # `$((1 + 2))`
     quoted: bool = False
+    subs: tuple = ()                # substitutions inside the expression
 
 
 @dataclass(frozen=True)
@@ -112,9 +113,28 @@ class Word(Node):
         for part in self.parts:
             if isinstance(part, (CmdSub, ProcSub)):
                 found.append(part)
-            elif isinstance(part, Param):
-                found.extend(part.subs)
+            elif isinstance(part, (Param, Arith)):
+                found.extend(part.subs if isinstance(part, Arith) else [p for p in part.subs if isinstance(p, (CmdSub, ProcSub))])
+                if isinstance(part, Param):
+                    for inner in part.subs:
+                        if isinstance(inner, Arith):
+                            found.extend(inner.subs)
         return tuple(found)
+
+    def text(self, sub: str = "__SUB__", arith: str = "0") -> str:
+        """Like `value`, but a substitution is replaced by `sub` and an arithmetic expansion by `arith`: the
+        form the command checkers expect (a command name or argument that is not known until run time)."""
+        out = []
+        for part in self.parts:
+            if isinstance(part, Lit):
+                out.append(part.text)
+            elif isinstance(part, (CmdSub, ProcSub)):
+                out.append(sub)
+            elif isinstance(part, Arith):
+                out.append(arith)
+            else:
+                out.append(part.raw)
+        return "".join(out)
 
 
 @dataclass(frozen=True)
@@ -124,6 +144,7 @@ class HereDoc(Node):
     strip_tabs: bool = False        # `<<-`
     quoted: bool = False            # `<<'EOF'`: the body is not expanded
     body_line: int = 0
+    expansions: tuple = ()          # the substitutions an unquoted body runs: $(...) and backticks
 
 
 @dataclass(frozen=True)
@@ -379,7 +400,9 @@ class _Words:
         if raw.startswith("$((", i):
             j = scanner._scan_arith(i + 3)
             flush()
-            parts.append(Arith(raw[i:j], quoted, line=here(i), end=here(j)))
+            nested = self.parts(raw[i + 3:j - 2], here(i), quoted=True)
+            subs = tuple(p for p in nested if isinstance(p, (CmdSub, ProcSub)))
+            parts.append(Arith(raw[i:j], quoted, subs, line=here(i), end=here(j)))
             return j
         if raw.startswith("$(", i):
             j = scanner._scan_subst(i + 2)
@@ -682,7 +705,14 @@ class _Parser:
                 body_line = self.line_of(lines[0][0]) if lines else line + 1
                 self.next_heredoc = index + 1
                 break
-        return HereDoc(delimiter, body, op == "<<-", quoted, body_line, line=line, end=line + len(body) + 1)
+        expansions: tuple = ()
+        if body and not quoted and ("$(" in "".join(body) or "`" in "".join(body)):
+            try:
+                found = self.words.parts("\n".join(body), body_line, quoted=True)
+                expansions = tuple(p for p in found if isinstance(p, (CmdSub, ProcSub)))
+            except ParseError:
+                expansions = ()            # an unreadable body is still data: it is not run as written
+        return HereDoc(delimiter, body, op == "<<-", quoted, body_line, expansions, line=line, end=line + len(body) + 1)
 
     def make_word(self, tok: _Tok) -> Word:
         line = self.line_of(tok.start)

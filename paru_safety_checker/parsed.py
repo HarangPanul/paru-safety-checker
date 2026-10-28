@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import NamedTuple
 
+from . import astadapt, shast
 from .invocation import payload, views
 from .preprocess import Line, Preprocessed, preprocess
 from .strict import Command, extract_commands, strip_substitutions
@@ -233,6 +234,7 @@ def _commands_of(line: Line) -> tuple[list[Command], bool]:
 
 
 MAX_PAYLOAD_DEPTH = 4
+USE_AST = True                  # False: the older text-based route (kept to compare the two)
 
 
 def _collect(found: list[Command], line: Line, out: list, depth: int, fed_by: tuple | None = None) -> None:
@@ -260,6 +262,28 @@ def _substitutions(text: str) -> list[Command]:
     for inner in subs:
         found.extend(extract_commands(inner, 0, stages)[0])
     return found
+
+
+def _emit(commands: tuple, text: str, top: bool, out: list, depth: int) -> None:
+    """Add the commands of one unit as ParsedCommands, then the commands inside any `sh -c STR` /
+    `eval STR` they start. `commands` is ((Command, line), ...)."""
+    plain = tuple(command for command, _ in commands)
+    stage_map: dict[int, list[Command]] = {}
+    for command in plain:
+        stage_map.setdefault(command.segment, []).append(command)
+    for command, line in commands:
+        out.append(ParsedCommand(command, line, text, top, plain, stage_map))
+    if depth >= MAX_PAYLOAD_DEPTH:
+        return
+    for command, line in commands:
+        for view in views(command):
+            payload_text = payload(view.name, view.args)
+            if payload_text and payload_text.strip("_SUB ").strip():
+                inner, ok = astadapt.flatten(payload_text)
+                if not ok:                           # not valid shell: read it as loosely as before
+                    inner = tuple(extract_commands(payload_text)[0]) or inner
+                if inner:
+                    _emit(tuple((c, line) for c in inner), text, top, out, depth + 1)
 
 
 class ParsedFile:
@@ -322,9 +346,28 @@ class ParsedFile:
         return self.pre is not None and self.pre.ok and line not in self.unparsed_lines
 
     @cached_property
+    def ast(self) -> "shast.ParseResult | None":
+        """The syntax tree of a shell file (see shast.py)."""
+        return shast.parse(self._text) if self.is_shell else None
+
+    @cached_property
     def _analysis(self) -> tuple:
         if self.pre is None:
             return (), frozenset()
+        if USE_AST:
+            return self._analysis_from_tree()
+        return self._analysis_from_text()
+
+    def _analysis_from_tree(self) -> tuple:
+        if not self.pre.ok:                          # the tokenizer failed: nothing was read
+            return (), frozenset()
+        units, bad = astadapt.units(self.ast.script)
+        out: list[ParsedCommand] = []
+        for unit in units:
+            _emit(unit.commands, unit.text, unit.top, out, 0)
+        return tuple(out), frozenset(bad)
+
+    def _analysis_from_text(self) -> tuple:
         out: list[ParsedCommand] = []
         bad: set[int] = set()
         group, group_line = Group(), 0          # the commands of the current source line, for pipes after `)` / `}`

@@ -489,8 +489,8 @@ def _scan_lines(parsed: ParsedFile) -> list[Finding]:
         for rule in rules:
             if unit.heredoc and rule.scope != "all":
                 continue                        # text being written to a file: only the rules that apply everywhere
-            if rule.fallback and parsed.understood(unit.number):
-                continue
+            if rule.fallback and parsed.understood(unit.number) and not unit.heredoc:
+                continue                        # a here-document body has no parsed commands: the pattern is all there is
             if not (rule.comments or not unit.comment):
                 continue
             if long_line and rule.risky:
