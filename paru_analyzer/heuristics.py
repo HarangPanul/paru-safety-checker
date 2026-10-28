@@ -1,9 +1,10 @@
 """Rule-based pre-scan of AUR package files.
 
-Deterministic, free, and independent of the model: a `warning` finding here needs a typed "yes"
+Deterministic, free, and independent of the model: a `warning` finding here still needs a typed "yes"
 even if the AI is unavailable or has been talked into answering "clear".
 
-Severities: `warning` needs a typed "yes", `info` asks the user. There is deliberately no "hint" level:
+Every install is asked about, even with nothing marked. Severities set how: `warning` needs a typed
+"yes", `info` and `clear` need "y" at `[y/N]`. There is deliberately no "hint" level:
 anything worth reporting makes the user confirm.
 """
 from __future__ import annotations
