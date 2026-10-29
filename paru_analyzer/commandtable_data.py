@@ -60,10 +60,17 @@ echo, printf, true, false, :, test, export, unset, local, declare, readonly, set
     ex: export PATH=/x => none
     note: Builtins with no effect on files (the effect on PATH and the environment is the job of the path-modification rule).
 
-cd, pushd, popd, pwd, let, wait, continue, break, msg, msg2, warning, error, plain, plainerr
+cd, pushd, popd, pwd, let, wait, continue, break
     like: pure
+    where: build hook
     ex: cd src => none
-    note: Builtins and makepkg's message functions.
+    ex: pushd src => none
+    note: Shell builtins that change the shell's own state (directory, counters, waiting for jobs) and touch no file.
+
+msg, msg2, warning, error, plain, plainerr
+    like: pure
+    ex: msg2 hi => none
+    note: makepkg's message functions.
 
 vercmp, basename, dirname, nproc, uname, which, tput
     like: pure

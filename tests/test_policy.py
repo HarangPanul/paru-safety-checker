@@ -62,6 +62,7 @@ def test_a_function_nobody_calls_must_be_ordinary_in_every_role():
     assert rules(orphan % "cp a b") == []                        # fine in a build and in a hook
     called = orphan.replace("build() { :; }", "build() { _helper; }")
     assert rules(called % "make") == []
+    assert rules(orphan % "cd src; pushd x; popd; let i++") == []
     hook = "_helper() {\n  %s\n}\npost_install() { :; }\n"
     assert rules(hook % "systemctl enable x", "x.install") == ["unknown-command"]
     assert rules((hook + "post_install() { _helper; }\n").replace("post_install() { :; }\n", "") % "systemctl enable x", "x.install") == []
