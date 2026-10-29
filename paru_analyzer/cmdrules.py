@@ -319,7 +319,7 @@ SHADOW_FILE = re.compile(r"^/etc/(?:shadow|gshadow)(?:/|$)")
 # the same locations written inside a longer string (`python -c 'open("/etc/shadow")'`), outside the package directory
 CREDENTIAL_IN_TEXT = re.compile("(?<![\\w}])" + CREDENTIAL_LOCATIONS + r"\b")
 SHADOW_IN_TEXT = re.compile(r"(?<![\w}])/etc/(?:shadow|gshadow)\b")
-HOME_ROOT = re.compile("^" + HOME_DIR + "/?$")
+IN_HOME = re.compile("^" + HOME_DIR + "(?:/|$)")
 ARCHIVERS = frozenset({"tar", "zip", "7z", "7za", "rar"})
 MESSAGE_COMMANDS = frozenset({"echo", "printf"})                # their arguments are text, not files
 HOME_AND_SYSTEM_TARGETS = frozenset({"/", "~", "$HOME", "${HOME}", "/home", "/etc", "/usr"})
@@ -376,8 +376,8 @@ def read_shadow(ctx: Ctx) -> bool:
 
 
 def home_archive(ctx: Ctx) -> bool:
-    """tar, zip, 7z or rar given the home directory itself (not a file in it) as one of its arguments."""
-    return ctx.name in ARCHIVERS and any(HOME_ROOT.match(p) for p in _paths_named(ctx))
+    """tar, zip, 7z or rar given the home directory, or anything in it, as one of its arguments (the old pattern did the same)."""
+    return ctx.name in ARCHIVERS and any(IN_HOME.match(p) for p in _paths_named(ctx))
 
 
 # ---- destruction ----

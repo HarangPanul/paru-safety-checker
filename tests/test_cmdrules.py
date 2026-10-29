@@ -94,6 +94,7 @@ STRUCTURED_EXAMPLES = [
     ("zip -r h.zip \"$HOME\"", "home-archive"),
     ("7z a h.7z /home/me", "home-archive"),
     ("tar -C ~ -czf h.tgz .", "home-archive"),
+    ("tar czf h.tgz ~/Documents", "home-archive"),                            # anything in the home directory
 ]
 
 
@@ -137,7 +138,6 @@ def test_every_structured_rule_has_an_example():
     ("echo see /etc/shadow", "read-shadow"),
     ("cp x \"$pkgdir/etc/shadow\"", "read-shadow"),                            # inside the package
     ("cp x ${pkgdir}/etc/shadow", "read-shadow"),
-    ("tar czf h.tgz ~/Documents", "home-archive"),                             # a folder, not the home directory
     ("tar czf h.tgz \"$srcdir\"", "home-archive"),
     ("cp x ~/.cache/x", "credential-paths"),
 ])
