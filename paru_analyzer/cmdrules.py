@@ -303,6 +303,39 @@ def home_persistence_write(ctx: Ctx) -> bool:
     return any(HOME_PERSISTENCE.match(path) for path in written(ctx))
 
 
+LD_PRELOAD_FILE = re.compile(r"^/etc/ld\.so\.preload$")
+AUTHORIZED_KEYS = re.compile(r"(?:^|/)authorized_keys2?$")
+DISK_DEVICE = re.compile(r"^/dev/(?:sd|nvme|vd|hd|xvd|mmcblk|disk)")
+DISK_TOOLS = re.compile(r"^(?:mkfs(?:\.\w+)?|wipefs|blkdiscard|shred)$")
+WORLD_WRITABLE_SYMBOLIC = re.compile(r"([ugoa]*)([-+=])([rwxXst]*)")
+HOME_AND_SYSTEM_TARGETS = frozenset({"/", "~", "$HOME", "${HOME}", "/home", "/etc", "/usr"})
+
+
+def ld_preload_file(ctx: Ctx) -> bool:
+    """Writes or deletes /etc/ld.so.preload, the file that makes every program load a library (a rootkit technique)."""
+    return any(LD_PRELOAD_FILE.match(p) for p in written(ctx))
+
+
+def authorized_keys(ctx: Ctx) -> bool:
+    """Any command that reads, writes or deletes a file called authorized_keys."""
+    return any(AUTHORIZED_KEYS.search(resolve(known(ctx, path), ctx.hook)) for _, path in file_accesses(ctx.view, ctx.hook))
+
+
+def _makes_world_writable(mode: str) -> bool:
+    if re.fullmatch(r"0?777", mode):
+        return True
+    for clause in mode.split(","):
+        match = WORLD_WRITABLE_SYMBOLIC.fullmatch(clause)
+        if match and match.group(2) in "+=" and "w" in match.group(3) and set(match.group(1)) & set("oa"):
+            return True
+    return False
+
+
+def world_writable(ctx: Ctx) -> bool:
+    mode, _ = _chmod_mode_and_targets(ctx)
+    return mode is not None and _makes_world_writable(mode)
+
+
 # ---- destruction ----
 
 def _root_like(target: str) -> bool:
@@ -331,6 +364,36 @@ def rm_system_dir(ctx: Ctx) -> bool:
         if path.startswith("/") and posixpath.normpath(path.rstrip("/") or "/") in TOP_LEVEL_DIRS:
             return True
     return False
+
+
+def disk_wipe(ctx: Ctx) -> bool:
+    """Writes to a raw disk (`dd of=/dev/sda`, `> /dev/sda`), formats or wipes one, or zaps a partition table."""
+    if ctx.name == "sgdisk" and any(a in ("--zap-all", "-Z") for a in ctx.view.args):
+        return True
+    if DISK_TOOLS.match(ctx.name) and any(DISK_DEVICE.match(known(ctx, a)) for a in operands(ctx.view.args)):
+        return True
+    return any(DISK_DEVICE.match(p) for p in written(ctx))
+
+
+def find_delete_root(ctx: Ctx) -> bool:
+    """`find / ... -delete` or `-exec rm`, over the whole system or the home directory."""
+    if ctx.name != "find":
+        return False
+    args = ctx.view.args
+    starts = []
+    for arg in args:
+        if arg.startswith(("-", "(", "!")):
+            break
+        starts.append(resolve(known(ctx, arg), ctx.hook))
+    deletes = "-delete" in args or any(a == "-exec" and i + 1 < len(args) and base(args[i + 1]) == "rm" for i, a in enumerate(args))
+    return deletes and any(t in HOME_AND_SYSTEM_TARGETS for t in starts)
+
+
+def recursive_perm_root(ctx: Ctx) -> bool:
+    """`chmod -R` / `chown -R` on / or the home directory (the first operand is the mode or the owner)."""
+    if ctx.name not in ("chmod", "chown") or not (flags(ctx.view.args) & {"R", "--recursive"}):
+        return False
+    return any(_root_like(known(ctx, t)) for t in operands(ctx.view.args)[1:])
 
 
 # ---- execution from world-writable places ----
@@ -370,6 +433,12 @@ CMD_RULES: tuple[CmdRule, ...] = (
     CmdRule("sudoers-passwd-write", "warning", "Writes to sudoers or the account databases", account_write),
     CmdRule("pacman-config-write", "warning", "Modifies pacman/makepkg configuration or its keyring directly", pacman_config_write),
     CmdRule("setuid-shell", "warning", "Sets the setuid bit on a shell/interpreter (privilege-escalation backdoor)", setuid_shell),
+    CmdRule("ld-preload-file", "warning", "Modifies /etc/ld.so.preload (rootkit technique)", ld_preload_file, "all"),
+    CmdRule("ssh-authorized-keys", "warning", "Touches SSH authorized_keys (backdoor access)", authorized_keys, "all"),
+    CmdRule("find-delete-root", "warning", "Deletes files across the system or home directory", find_delete_root),
+    CmdRule("recursive-perm-root", "warning", "Recursively changes permissions or ownership of / or the home directory", recursive_perm_root),
+    CmdRule("disk-wipe", "warning", "Writes to or wipes a raw disk device", disk_wipe),
+    CmdRule("world-writable", "info", "Makes files world-writable", world_writable),
     CmdRule("rm-root", "warning", "Deletes the root or home directory", rm_root, "all"),
     CmdRule("rm-system-dir", "warning", "Deletes a top-level system directory", rm_system_dir),
     CmdRule("home-persistence-write", "warning",

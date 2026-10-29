@@ -68,6 +68,20 @@ STRUCTURED_EXAMPLES = [
     ("cp x /usr/bin/x", "live-system-write"),
     ("echo 'u ALL=(ALL) ALL' | sh", "echo-to-shell"),
     ("curl x | xargs -I{} sh -c {}", "fetched-xargs-exec"),
+    ("echo /x.so >> /etc//ld.so.preload", "ld-preload-file"),
+    ("\"tee\" -a /etc/../etc/ld.so.preload", "ld-preload-file"),
+    ("echo key >> authorized_keys", "ssh-authorized-keys"),
+    ("cat k | tee -a \"$HOME\"/.ssh/authorized_keys", "ssh-authorized-keys"),
+    ("find / -name '*.conf' -delete", "find-delete-root"),
+    ("find //home -type f -exec rm {} +", "find-delete-root"),
+    ("chmod -R 777 /", "recursive-perm-root"),
+    ("chown -Rf nobody '~'", "recursive-perm-root"),
+    ("dd if=/dev/zero of=/dev/sda bs=1M", "disk-wipe"),
+    ("mkfs.ext4 /dev/nvme0n1p1", "disk-wipe"),
+    ("echo x > /dev/sda", "disk-wipe"),
+    ("sgdisk --zap-all disk", "disk-wipe"),
+    ("chmod 0777 x", "world-writable"),
+    ("chmod a+rwx,g-w x", "world-writable"),
 ]
 
 
@@ -95,6 +109,18 @@ def test_every_structured_rule_has_an_example():
     ("echo '/etc/sudoers' > /dev/null", "sudoers-passwd-write"),
     ("cp /etc/pacman.conf \"$srcdir/pacman.conf\"", "pacman-config-write"),   # a read, not a write
     ("sha256sum f | sh -c 'cat'", "decode-exec"),
+    ("echo see /etc/ld.so.preload", "ld-preload-file"),                        # a word in a message
+    ("cat /etc/ld.so.preload", "ld-preload-file"),                             # a read
+    ("echo 'put it in authorized_keys'", "ssh-authorized-keys"),
+    ("find . -name '*.o' -delete", "find-delete-root"),
+    ("find \"$srcdir\" -exec rm {} +", "find-delete-root"),
+    ("chmod -R 755 \"$pkgdir\"", "recursive-perm-root"),
+    ("chmod 755 /", "recursive-perm-root"),                                    # not recursive
+    ("dd if=/dev/sda of=disk.img", "disk-wipe"),                               # reads the disk
+    ("echo x > /dev/null", "disk-wipe"),
+    ("chmod 775 x", "world-writable"),
+    ("chmod 1777 \"$pkgdir/tmp\"", "world-writable"),
+    ("chmod go-w x", "world-writable"),
 ])
 def test_structured_rule_stays_quiet_where_the_text_was_misleading(line, rule):
     assert rule not in rules_of(line)
