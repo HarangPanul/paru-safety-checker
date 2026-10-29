@@ -440,6 +440,131 @@ def recursive_perm_root(ctx: Ctx) -> bool:
     return any(_root_like(known(ctx, t)) for t in operands(ctx.view.args)[1:])
 
 
+# ---- the network ----
+
+CURLS = frozenset({"curl", "wget", "aria2c"})
+NETCATS = frozenset({"nc", "ncat", "netcat"})
+GIT_VALUE_OPTIONS = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
+VCS_FETCH = {"svn": {"co", "checkout", "export", "up", "update"}, "hg": {"clone", "pull"}, "bzr": {"branch", "checkout"},
+             "fossil": {"clone"}}
+DOWNLOAD_TOOLS = frozenset("lftp axel tftp ftp sftp gsutil rclone yt-dlp youtube-dl transmission-cli wget2 ipfs http https xh".split())
+SYSTEM_INSTALLERS = frozenset("pacman paru yay pamac aura trizen yaourt apt apt-get dnf yum zypper snap flatpak brew nix nix-env".split())
+INSTALL_VERBS = frozenset({"install", "add", "pull", "update", "upgrade"})
+REGISTRY_INSTALL = {"pip": {"install"}, "pip3": {"install"}, "npm": {"install", "i"}, "gem": {"install"}, "cargo": {"install"}}
+UPLOAD_OPTIONS = frozenset({"-T", "--upload-file"})
+RAW_IP_URL = re.compile(r"https?://(?!(?:127|0|10)\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)\d{1,3}(?:\.\d{1,3}){3}\b")
+
+
+def _subcommand(args: list[str]) -> tuple[str | None, list[str]]:
+    """The git subcommand and the words after it (options that take a value, like `-C dir`, are skipped)."""
+    i = 0
+    while i < len(args):
+        if args[i] in GIT_VALUE_OPTIONS:
+            i += 2
+        elif args[i].startswith("-"):
+            i += 1
+        else:
+            return args[i], args[i + 1:]
+    return None, []
+
+
+def _vcs_fetch(ctx: Ctx) -> bool:
+    if ctx.name == "git":
+        sub, rest = _subcommand(ctx.view.args)
+        return sub in ("clone", "fetch", "pull") or (sub == "submodule" and rest[:1] in (["update"], ["add"])) or (
+            sub == "remote" and rest[:1] == ["add"])
+    wanted = VCS_FETCH.get(ctx.name)
+    return bool(wanted) and bool(ctx.view.args) and ctx.view.args[0] in wanted
+
+
+def build_time_download(ctx: Ctx) -> bool:
+    return ctx.name in CURLS and not ctx.view.inside
+
+
+def curl_in_substitution(ctx: Ctx) -> bool:
+    return ctx.name in ("curl", "wget") and ctx.view.inside
+
+
+def install_hook_network(ctx: Ctx) -> bool:
+    if ctx.name in CURLS or ctx.name in ("nc", "ncat"):
+        return True
+    if ctx.name == "git":
+        return _subcommand(ctx.view.args)[0] == "clone"
+    return bool(ctx.view.args) and ctx.view.args[0] in REGISTRY_INSTALL.get(ctx.name, ())
+
+
+def curl_upload(ctx: Ctx) -> bool:
+    if ctx.name not in CURLS:
+        return False
+    args = ctx.view.args
+    for i, arg in enumerate(args):
+        following = args[i + 1] if i + 1 < len(args) else ""
+        if arg in UPLOAD_OPTIONS or arg.startswith("--upload-file="):
+            return True
+        if re.fullmatch(r"-d@.*", arg) or (arg == "-d" and following.startswith("@")):
+            return True
+        if re.fullmatch(r"--data(?:-binary|-raw|-urlencode)?=@.*", arg) or (
+                re.fullmatch(r"--data(?:-binary|-raw|-urlencode)?", arg) and following.startswith("@")):
+            return True
+        if arg == "-F" and re.search(r"=@", following):
+            return True
+    return False
+
+
+def remote_copy(ctx: Ctx) -> bool:
+    return ctx.name in ("scp", "sftp", "rsync") and any(re.match(r"^[\w.-]+@[\w.-]+:", a) for a in ctx.view.args)
+
+
+def vcs_fetch(ctx: Ctx) -> bool:
+    return _vcs_fetch(ctx)
+
+
+def ip_download(ctx: Ctx) -> bool:
+    if ctx.name in CURLS or (ctx.name == "git" and _subcommand(ctx.view.args)[0] == "clone"):
+        return any(RAW_IP_URL.match(a) for a in ctx.view.args)
+    return False
+
+
+def raw_socket_connect(ctx: Ctx) -> bool:
+    if ctx.name not in NETCATS and ctx.name != "telnet":
+        return False
+    words = [a for a in ctx.view.args if not a.startswith("-")]
+    return len(words) >= 2 and bool(re.fullmatch(r"[\w.-]+", words[0])) and bool(re.fullmatch(r"\d{2,5}", words[1]))
+
+
+def listen_socket(ctx: Ctx) -> bool:
+    args = ctx.view.args
+    if ctx.name in NETCATS:
+        return any(re.fullmatch(r"-\w*l\w*", a) for a in args)
+    if ctx.name == "socat":
+        return any(re.search(r"(?:TCP4?|UDP)-LISTEN", a) for a in args)
+    if re.fullmatch(r"python[\d.]*", ctx.name):
+        return args[:1] == ["-m"] and args[1:2] in (["http.server"], ["SimpleHTTPServer"])
+    return ctx.name == "php" and args[:1] == ["-S"] and args[1:2] != [] and args[1].startswith("0.0.0.0")
+
+
+def download_tool(ctx: Ctx) -> bool:
+    args = ctx.view.args
+    if ctx.name in DOWNLOAD_TOOLS:
+        return bool(args)
+    if ctx.name == "git":
+        return _subcommand(args)[0] == "lfs"
+    if ctx.name == "gh":
+        return args[:1] in (["release"], ["repo"], ["api"])
+    if ctx.name == "aws":
+        return args[:1] == ["s3"]
+    return ctx.name == "az" and args[:1] == ["storage"]
+
+
+def system_install(ctx: Ctx) -> bool:
+    args = ctx.view.args
+    if ctx.name in SYSTEM_INSTALLERS:
+        return any(re.fullmatch(r"-[SU]\w*", a) for a in args) or args[:1] and args[0] in INSTALL_VERBS
+    if ctx.name in ("docker", "podman"):
+        return args[:1] and args[0] in ("pull", "run", "build", "create", "compose")
+    return False
+
+
 # ---- execution from world-writable places ----
 
 def exec_from_temp(ctx: Ctx) -> bool:
@@ -486,6 +611,17 @@ CMD_RULES: tuple[CmdRule, ...] = (
     CmdRule("credential-paths", "info", "Accesses credential, wallet, history or browser-profile data in the user's home", credential_paths),
     CmdRule("read-shadow", "info", "Reads the password hash database", read_shadow),
     CmdRule("home-archive", "info", "Archives the user's home directory", home_archive),
+    CmdRule("build-time-download", "info", "Downloads at build time, bypassing source checksums", build_time_download, "build"),
+    CmdRule("install-hook-network", "info", "Install hook uses the network or a package registry", install_hook_network, "install"),
+    CmdRule("curl-in-substitution", "info", "Downloads inside a command substitution (runs whenever the file is parsed)", curl_in_substitution),
+    CmdRule("curl-upload", "info", "Uploads a local file to a remote host", curl_upload),
+    CmdRule("remote-copy", "info", "Copies files to or from a remote host", remote_copy),
+    CmdRule("vcs-fetch", "info", "Fetches code from a remote repository during the build or install", vcs_fetch),
+    CmdRule("ip-download", "info", "Downloads from a raw IP address", ip_download),
+    CmdRule("raw-socket-connect", "info", "Opens a raw network connection", raw_socket_connect),
+    CmdRule("listen-socket", "info", "Starts a network listener", listen_socket),
+    CmdRule("download-tool", "info", "Uses a download tool at build time", download_tool),
+    CmdRule("system-install", "info", "Installs software or pulls container images from inside the package script", system_install),
     CmdRule("rm-root", "warning", "Deletes the root or home directory", rm_root, "all"),
     CmdRule("rm-system-dir", "warning", "Deletes a top-level system directory", rm_system_dir),
     CmdRule("home-persistence-write", "warning",
