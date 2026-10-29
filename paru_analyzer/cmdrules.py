@@ -308,6 +308,20 @@ AUTHORIZED_KEYS = re.compile(r"(?:^|/)authorized_keys2?$")
 DISK_DEVICE = re.compile(r"^/dev/(?:sd|nvme|vd|hd|xvd|mmcblk|disk)")
 DISK_TOOLS = re.compile(r"^(?:mkfs(?:\.\w+)?|wipefs|blkdiscard|shred)$")
 WORLD_WRITABLE_SYMBOLIC = re.compile(r"([ugoa]*)([-+=])([rwxXst]*)")
+HOME_DIR = r"(?:~|\$HOME|\$\{HOME\}|/home/[^/]+|/root)"
+CREDENTIAL_LOCATIONS = (
+    HOME_DIR + r"/\.(?:ssh|gnupg|aws|kube|azure|mozilla|thunderbird|password-store|electrum|bitcoin|ethereum|monero|netrc"
+    r"|npmrc|pypirc|git-credentials|bash_history|zsh_history|python_history|docker/config\.json"
+    r"|config/(?:google-chrome|chromium|BraveSoftware|vivaldi|opera|microsoft-edge|discord|Slack|Signal|Element|gh|rclone|gcloud|solana|1Password|Bitwarden|Code))"
+)
+CREDENTIAL_PATH = re.compile("^" + CREDENTIAL_LOCATIONS + r"(?:/|$)")
+SHADOW_FILE = re.compile(r"^/etc/(?:shadow|gshadow)(?:/|$)")
+# the same locations written inside a longer string (`python -c 'open("/etc/shadow")'`), outside the package directory
+CREDENTIAL_IN_TEXT = re.compile("(?<![\\w}])" + CREDENTIAL_LOCATIONS + r"\b")
+SHADOW_IN_TEXT = re.compile(r"(?<![\w}])/etc/(?:shadow|gshadow)\b")
+HOME_ROOT = re.compile("^" + HOME_DIR + "/?$")
+ARCHIVERS = frozenset({"tar", "zip", "7z", "7za", "rar"})
+MESSAGE_COMMANDS = frozenset({"echo", "printf"})                # their arguments are text, not files
 HOME_AND_SYSTEM_TARGETS = frozenset({"/", "~", "$HOME", "${HOME}", "/home", "/etc", "/usr"})
 
 
@@ -334,6 +348,36 @@ def _makes_world_writable(mode: str) -> bool:
 def world_writable(ctx: Ctx) -> bool:
     mode, _ = _chmod_mode_and_targets(ctx)
     return mode is not None and _makes_world_writable(mode)
+
+
+def _paths_named(ctx: Ctx):
+    """Every path the command line names, resolved: operands, option values (`--file=p`, `-F f=@p`) and redirection
+    targets. The words of `echo` and `printf` are a message, so only their redirections count."""
+    words = [] if ctx.name in MESSAGE_COMMANDS else list(ctx.view.args)
+    words += [target for _, target in ctx.view.redirects]
+    for word in words:
+        for piece in {word, *re.split(r"[=@:]", word)}:
+            if piece:
+                yield resolve(known(ctx, piece), ctx.hook)
+
+
+def _in_words(ctx: Ctx, pattern) -> bool:
+    """The pattern occurs inside one of the words, such as a program given to an interpreter (not in a message)."""
+    return ctx.name not in MESSAGE_COMMANDS and any(pattern.search(word) for word in ctx.view.args)
+
+
+def credential_paths(ctx: Ctx) -> bool:
+    """Names a credential, wallet, history or browser-profile location in the user's home."""
+    return any(CREDENTIAL_PATH.match(p) for p in _paths_named(ctx)) or _in_words(ctx, CREDENTIAL_IN_TEXT)
+
+
+def read_shadow(ctx: Ctx) -> bool:
+    return any(SHADOW_FILE.match(p) for p in _paths_named(ctx)) or _in_words(ctx, SHADOW_IN_TEXT)
+
+
+def home_archive(ctx: Ctx) -> bool:
+    """tar, zip, 7z or rar given the home directory itself (not a file in it) as one of its arguments."""
+    return ctx.name in ARCHIVERS and any(HOME_ROOT.match(p) for p in _paths_named(ctx))
 
 
 # ---- destruction ----
@@ -439,6 +483,9 @@ CMD_RULES: tuple[CmdRule, ...] = (
     CmdRule("recursive-perm-root", "warning", "Recursively changes permissions or ownership of / or the home directory", recursive_perm_root),
     CmdRule("disk-wipe", "warning", "Writes to or wipes a raw disk device", disk_wipe),
     CmdRule("world-writable", "info", "Makes files world-writable", world_writable),
+    CmdRule("credential-paths", "info", "Accesses credential, wallet, history or browser-profile data in the user's home", credential_paths),
+    CmdRule("read-shadow", "info", "Reads the password hash database", read_shadow),
+    CmdRule("home-archive", "info", "Archives the user's home directory", home_archive),
     CmdRule("rm-root", "warning", "Deletes the root or home directory", rm_root, "all"),
     CmdRule("rm-system-dir", "warning", "Deletes a top-level system directory", rm_system_dir),
     CmdRule("home-persistence-write", "warning",
