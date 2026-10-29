@@ -192,3 +192,32 @@ def test_the_rule_matrix_cases_build_and_stay_covered():
         for name, text in {"PKGBUILD": f"build() {{\n  {line}\n}}\n", "x.install": f"post_install() {{\n  {line}\n}}\n"}.items():
             built = ir.build_ir({name: text})
             assert ir.uncovered_lines(built, {name: text}) == [], (name, line)
+
+
+# ---- the same table and roles as the rules (docs/COMMANDS.md, step 6) ----
+
+def test_steps_and_units_carry_the_roles_of_the_function_they_are_in():
+    text = "pkgname=x\npkgver=1\n_h() { cp a b; }\n_orphan() { cp a b; }\nbuild() { _h; }\npackage() { _h; }\nx=$(date)\n"
+    built = ir.build_ir({"PKGBUILD": text})
+    units = {u["id"]: u for u in built["units"]}
+    assert units["PKGBUILD:_h"]["roles"] == ["build", "package"] and units["PKGBUILD:_h"]["runs"] == "as-user"
+    assert units["PKGBUILD:_orphan"]["roles"] == ["unknown"] and units["PKGBUILD:_orphan"]["runs"] == "unknown"
+    assert units["PKGBUILD:(top)"]["roles"] == ["parse"] and units["PKGBUILD:(top)"]["runs"] == "at-parse"
+    roles = {(s["unit"], s["program"]): s["roles"] for s in built["steps"]}
+    assert roles[("PKGBUILD:(top)", "date")] == ["parse"] and roles[("PKGBUILD:_h", "cp")] == ["build", "package"]
+    assert roles[("PKGBUILD:_orphan", "cp")] == ["unknown"]
+
+
+def test_a_program_of_the_source_tree_is_known_while_building_and_a_gap_in_an_orphan_function():
+    ok = ir.build_ir({"PKGBUILD": "pkgname=x\npkgver=1\nbuild() {\n  ./tools/gen out\n}\n"})
+    step = next(s for s in ok["steps"] if s["argv"] == ["out"])
+    assert step["known"] and {"op": "exec", "target": "./tools/gen"} in step["ops"]
+    assert not [g for g in ok["gaps"] if g["reason"] == "unknown-program"]
+    orphan = ir.build_ir({"PKGBUILD": "pkgname=x\npkgver=1\n_o() {\n  ./tools/gen out\n}\nbuild() { :; }\n"})
+    assert [g["reason"] for g in orphan["gaps"] if g["reason"] == "unknown-program"] == ["unknown-program"]
+
+
+def test_a_system_effect_of_the_table_is_an_op():
+    built = ir.build_ir({"x.install": "post_install() {\n  groupadd foo\n  systemctl enable foo\n  systemctl status foo\n}\n"})
+    ops = [(s["program"], [o["what"] for o in s["ops"] if o["op"] == "system"]) for s in built["steps"]]
+    assert ops == [("groupadd", ["users"]), ("systemctl", ["services"]), ("systemctl", [])]

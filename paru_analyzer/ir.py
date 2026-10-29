@@ -15,7 +15,7 @@ import re
 import sys
 from urllib.parse import urlsplit
 
-from . import invocation, strict
+from . import commandtable, invocation, roles as role_names, strict
 from .fetch import TRUNCATED_MARKER
 from .fileaccess import FILE_COMMANDS, file_accesses
 from .heuristics import DATA_EXTENSIONS, DATA_NAME_PREFIXES, MAX_PATTERN_LINE, is_prose, source_entries
@@ -159,6 +159,9 @@ def ops_of(final, name: str, fed_by: list[str], variables: dict, hook: bool, kno
         ops.append({"op": "read" if verb in ("read", "access") else verb, "path": path, "area": area(path, variables, hook)})
     if (found := _install_pkg(name, args)) is not None:
         ops.append(found)
+    for effect in commandtable.load().effects_of(strict._table_key(commandtable.load(), name), args, final.piped) or ():
+        if effect.kind == "system" and effect.target != "packages":       # packages are the install-pkg op above
+            ops.append({"op": "system", "what": effect.target})
     if name == "base64" and any(a in ("-d", "-D", "--decode") for a in args):
         ops.append({"op": "decode", "kind": "base64"})
     elif name in ("xxd",) and "-r" in args:
@@ -170,6 +173,17 @@ def ops_of(final, name: str, fed_by: list[str], variables: dict, hook: bool, kno
     if not known:
         ops.append({"op": "other"})
     return ops
+
+
+def _runs(roles: frozenset) -> str:
+    """Who runs the code and when, from its roles (roles.py): `unknown` is any role at all, so it is not claimed."""
+    if roles == {role_names.HOOK}:
+        return "as-root-on-install"
+    if roles == {role_names.PARSE}:
+        return "at-parse"
+    if roles and roles <= {role_names.BUILD, role_names.PACKAGE}:
+        return "as-user"
+    return "unknown"
 
 
 def _scheme(url: str) -> str:
@@ -289,16 +303,19 @@ def build_ir(files: dict[str, str], findings: list[Finding] | None = None, packa
             chain = list(invocation.views(pc.command))
             final = chain[-1]
             program = strict.normalise(final.name)
-            verdict = strict.classify(final, where, local)
-            known = verdict is None or verdict[0] in ("inline-code", "network-command") or (
+            roles = parsed.roles_of(pc.function)
+            verdict = strict.classify(final, where, local, roles)
+            known = verdict is None or verdict[0] in ("inline-code", "network-command", "source-tree-program") or (
                 verdict[0] == "unknown-command" and (program in TRANSLATED or invocation.interpreter(program)))
             fed_by = [ids[id(c)] for c in pc.upstream() if id(c) in ids]
             unit = f"{name}:(top)" if pc.top else f"{name}:{_innermost(functions, pc.line) or '(top)'}"
             unit_steps.setdefault(unit, []).append(sid)
             ops = ops_of(final, program, fed_by, variables, hook, known)
+            if verdict is not None and verdict[0] == "source-tree-program":
+                ops.append({"op": "exec", "target": final.name})
             ir["steps"].append({
                 "id": sid, "unit": unit, "file": name, "line": pc.line, "lines": [pc.line, max(pc.line, pc.end)],
-                "text": pc.text, "program": program, "argv": list(final.args), "via": [v.name for v in chain[:-1]], "known": known,
+                "text": pc.text, "program": program, "argv": list(final.args), "via": [v.name for v in chain[:-1]], "known": known, "roles": sorted(roles),
                 "pipeline": {"segment": pc.command.segment, "piped": pc.command.piped, "fed_by": fed_by},
                 "ops": ops, "substitution": pc.command.inside, "inside": ids.get(id(pc.parent)) if pc.parent is not None else None,
             })
@@ -329,12 +346,14 @@ def build_ir(files: dict[str, str], findings: list[Finding] | None = None, packa
         top_lines = [u for u in parsed.code_units if u.top]
         for fname, start, end in functions:
             unit_id = f"{name}:{fname}"
+            unit_roles = parsed.roles_of(fname)
             ir["units"].append({"id": unit_id, "kind": "hook" if hook else "function", "file": name, "lines": [start, end],
-                                "runs": "as-root-on-install" if hook else "as-user", "steps": unit_steps.get(unit_id, [])})
+                                "runs": _runs(unit_roles), "roles": sorted(unit_roles), "steps": unit_steps.get(unit_id, [])})
         if top_lines:
             ir["units"].append({"id": f"{name}:(top)", "kind": "toplevel", "file": name,
                                 "lines": [min(u.line for u in top_lines), max(max(u.line, u.end) for u in top_lines)],
-                                "runs": "at-parse", "steps": unit_steps.get(f"{name}:(top)", [])})
+                                "runs": _runs(parsed.roles_of(None)), "roles": sorted(parsed.roles_of(None)),
+                                "steps": unit_steps.get(f"{name}:(top)", [])})
 
     ir["effects"] = {"network": network, "writes": writes, "deletes": deletes, "reads": reads, "privilege": privilege, "installs": installs}
     step_by_file: dict[str, list[dict]] = {}

@@ -8,6 +8,7 @@
 - `declarations`는 딕셔너리가 아니라 목록입니다: `{file, name, kind: array|scalar, value, line}`. 모든 파일의 것이 들어갑니다.
 - `statements`가 추가됐습니다: 구문 트리의 모든 문장을 `{file, lines, kind: declaration|step|gap}`로 적습니다. 덮개 불변식은 이것으로 검사합니다.
 - **덮개 불변식의 정의**: 쉘 파일에서 빈 줄, 주석, 구조만 담은 줄(`fi`, `}`, `name() {`, `if ...; then`, `case ... in` 등)을 뺀 모든 줄은 어떤 `statements` 또는 `gaps`의 줄 범위 안에 있습니다. heredoc 본문과 여러 줄 문자열은 그 문장의 범위에 포함됩니다. `ir.uncovered_lines(ir, files)`가 위반한 줄을 돌려줍니다.
+- **명령 표와 역할 (6단계)**: IR은 규칙과 같은 명령 표(`commandtable_data.py`)와 함수 역할(`roles.py`)을 씁니다. 단계(`steps`)에는 `roles`(`parse`/`build`/`package`/`hook`/`unknown`의 목록)가, 단위(`units`)에는 `roles`와 거기서 정한 `runs`가 있습니다. `runs`는 역할이 `hook` 하나면 `as-root-on-install`, `parse` 하나면 `at-parse`, `build`/`package`뿐이면 `as-user`이고, 호출되는 곳을 모르는 함수(`unknown`)나 역할이 섞인 함수는 `unknown`입니다. 소스 트리 프로그램(`./x`)은 `build`/`package`에서 `known`이고 `exec` op가 붙으며, 그 밖의 역할에서는 `unknown-program` 빈틈입니다. 표의 `system` 효과(`useradd`, `systemctl enable` 등)는 `{"op": "system", "what": ...}` op가 됩니다(패키지 설치는 기존 `install-pkg`).
 - `known`은 "허용 목록에 있다"가 아니라 "IR이 이 프로그램을 번역할 수 있다"입니다(`curl`은 허용 목록에 없어도 `fetch` op로 번역되므로 known). 번역표에 없거나 변수로 만든 이름이면 `known: false`이고 `gaps`에 `unknown-program`/`dynamic-command`로 들어갑니다. `python -c` 같은 인라인 코드는 known이지만 `inline-code` 빈틈입니다.
 - 단계에 `lines`(문장의 시작과 끝 줄), `substitution`(`$(...)` 안인지), `inside`(`sh -c`/`eval` 문자열에서 나왔다면 바깥 단계의 id)가 있습니다.
 - `ops`에는 위 표의 `fetch`, `exec`, `read`, `write`, `delete`, `chmod`, `install-pkg`, `decode`, `spawn`, `other`가 모두 구현돼 있습니다. `exec`의 `target`은 `stdin`, `string`(`-c`/`eval`), 스크립트 경로 중 하나입니다.
