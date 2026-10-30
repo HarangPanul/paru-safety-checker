@@ -258,6 +258,37 @@ def test_measure_counts_what_the_noisy_rules_are_about(tmp_path):
     assert "gen-tool" in corpus.format_report(report)
 
 
+def test_measure_lists_unknown_programs_with_context_and_table_state(tmp_path):
+    corpus_file = tmp_path / "pkgbuilds.jsonl"
+    records = [
+        {"name": "a", "files": {"PKGBUILD": "build() {\n  gen-tool x\n  gen-tool y\n}\n"}},
+        {"name": "b", "files": {"PKGBUILD": "build() {\n  gen-tool z\n}\n", "b.install": "post_install() {\n  gen-tool h\n  pwd2 q\n}\n"}},
+    ]
+    corpus_file.write_text("".join(json.dumps(r) + "\n" for r in records))
+    report = corpus.measure(corpus_file)
+    info = report["unknown_programs"]["gen-tool"]
+    assert (info["packages"], info["findings"]) == (2, 3)            # one finding per program and file
+    assert info["contexts"] == {"build": 2, "hook": 1}
+    assert info["table"] == "not in the table"
+    assert len(info["examples"]) == corpus.UNKNOWN_EXAMPLES and info["examples"][0].startswith("a PKGBUILD:2: gen-tool x")
+    assert list(report["unknown_programs"])[0] == "gen-tool"          # most packages first
+    assert "gen-tool  [not in the table]" in corpus.format_report(report)
+
+
+def test_unknown_program_in_the_table_for_another_context_says_so():
+    hint = corpus._table_hint("msg", corpus.Counter({"hook": 1}))
+    assert hint == "in the table for build; seen in hook"
+
+
+def test_report_keeps_up_to_the_detail_limit(tmp_path):
+    corpus_file = tmp_path / "pkgbuilds.jsonl"
+    body = "build() {\n" + "".join(f"  tool{i} x\n" for i in range(corpus.DETAIL_LIMIT + 20)) + "}\n"
+    corpus_file.write_text(json.dumps({"name": "p", "files": {"PKGBUILD": body}}) + "\n")
+    report = corpus.measure(corpus_file)
+    assert len(report["details"]["unknown-command"]) == corpus.DETAIL_LIMIT
+    assert len(report["unknown_programs"]) == corpus.DETAIL_LIMIT
+
+
 def test_iter_records_accepts_a_string_path(tmp_path):
     file = tmp_path / "corpus.jsonl"
     file.write_text('{"name": "a"}\n{"name": "b"')

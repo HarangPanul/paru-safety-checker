@@ -234,6 +234,34 @@ DETAIL_KEYS = {
 }
 
 
+DETAIL_LIMIT = 300            # names kept per rule in the JSON report
+UNKNOWN_EXAMPLES = 3          # example lines kept per unknown program
+
+
+def _unknown_line(finding) -> str:
+    """The command line of an unknown-command finding (the message ends with `name: line`)."""
+    return finding.message.split("): ", 1)[-1].split(": ", 1)[-1][:120]
+
+
+def _table_hint(name: str, contexts: Counter) -> str:
+    """What the command table says about this program, to decide whether it needs an entry or only a `where:`."""
+    from . import commandtable
+    entry = commandtable.load().lookup(name)
+    if entry is None:
+        return "not in the table"
+    where = "/".join(entry.where or ("build",))
+    return f"in the table for {where}; seen in {'/'.join(sorted(contexts))}"
+
+
+def _unknown_programs(found: dict) -> dict:
+    """program -> how many packages and lines, where it ran, what the table says, and a few example lines."""
+    ranked = sorted(found.items(), key=lambda kv: (-len(kv[1]["packages"]), -kv[1]["findings"], kv[0]))
+    return {name: {"packages": len(info["packages"]), "findings": info["findings"],
+                   "contexts": dict(info["contexts"]), "table": _table_hint(name, info["contexts"]),
+                   "examples": info["examples"]}
+            for name, info in ranked[:DETAIL_LIMIT]}
+
+
 def _detail_key(rule: str, finding) -> str | None:
     match = DETAIL_KEYS[rule].search(finding.message)
     if not match:
@@ -251,6 +279,7 @@ def measure(path: Path, examples: int = 3) -> dict:
     flagged: dict[str, list[str]] = {"clear": [], "info": [], "warning": []}
     rules: dict[str, dict] = defaultdict(lambda: {"severity": "", "findings": 0, "packages": set(), "examples": []})
     details: dict[str, Counter] = {rule: Counter() for rule in DETAIL_KEYS}
+    unknown: dict[str, dict] = defaultdict(lambda: {"packages": set(), "findings": 0, "contexts": Counter(), "examples": []})
     total = 0
     for record in iter_records(path):
         if "files" not in record:
@@ -263,6 +292,13 @@ def measure(path: Path, examples: int = 3) -> dict:
         for finding in findings:
             if finding.rule in details and (key := _detail_key(finding.rule, finding)):
                 details[finding.rule][key] += 1
+                if finding.rule == "unknown-command":
+                    info = unknown[key]
+                    info["packages"].add(record["name"])
+                    info["findings"] += 1
+                    info["contexts"]["hook" if finding.file.endswith(".install") else "build"] += 1
+                    if len(info["examples"]) < UNKNOWN_EXAMPLES:
+                        info["examples"].append(f"{record['name']} {finding.file}:{finding.line}: {_unknown_line(finding)}")
             entry = rules[finding.rule]
             entry["severity"] = finding.severity
             entry["findings"] += 1
@@ -272,7 +308,8 @@ def measure(path: Path, examples: int = 3) -> dict:
     return {
         "total": total, "levels": levels, "flagged": flagged,
         "rules": {k: {**v, "packages": sorted(v["packages"])} for k, v in rules.items()},
-        "details": {rule: dict(counter.most_common(40)) for rule, counter in details.items() if counter},
+        "details": {rule: dict(counter.most_common(DETAIL_LIMIT)) for rule, counter in details.items() if counter},
+        "unknown_programs": _unknown_programs(unknown),
     }
 
 
@@ -292,6 +329,13 @@ def format_report(report: dict) -> str:
         lines.append("")
         lines.append(f"what the {rule} findings are about (top 10 of {len(counts)} shown in the JSON):")
         lines.extend(f"  {count:5}  {key}" for key, count in list(counts.items())[:10])
+    unknown = report.get("unknown_programs", {})
+    if unknown:
+        lines.append("")
+        lines.append(f"unknown programs, most packages first (top 15 of {len(unknown)} shown in the JSON, with example lines):")
+        for name, info in list(unknown.items())[:15]:
+            lines.append(f"  {info['packages']:5} packages  {name}  [{info['table']}]")
+            lines.extend(f"          {example}" for example in info["examples"][:1])
     if report["flagged"]["warning"]:
         lines.append("")
         lines.append("warning packages (review first): " + ", ".join(report["flagged"]["warning"]))
