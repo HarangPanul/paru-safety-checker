@@ -122,13 +122,6 @@ getopts, umask, ulimit, alias, unalias, sleep, seq, yes, expr, factor, printenv,
     ex: umask 022 => none
     note: Builtins and small commands that compute or print on their arguments, or ask the system a question, and touch no file.
 
-ps, pgrep, pidof, lscpu, lsblk, lsmod, lspci, lsusb
-    like: pure
-    where: build hook
-    ex: pgrep foo => none
-    ex: lsmod => none
-    note: List processes, devices or modules; they change nothing.
-
 # ---- reading ----
 
 cat
@@ -162,12 +155,14 @@ egrep, fgrep
     ex: egrep foo f => read f
     note: grep with a fixed pattern syntax.
 
-od, hexdump, rev, tac, nl, fold, paste, join, comm, expand, unexpand, column, fmt, base64, sha224sum, sha384sum, shasum, sum, tsort, numfmt, diff3, sdiff, lsattr, getfacl, less, more, zstdcat, lzcat, lz4cat
+od, hexdump, rev, tac, nl, fold, paste, join, comm, expand, unexpand, column, fmt, base64, sha224sum, sha384sum, shasum, sum, tsort, numfmt, diff3, sdiff, lsattr, getfacl, less, more, zstdcat, lzcat, lz4cat, ps, pgrep, pidof, lscpu, lsblk, lsmod, lspci, lsusb
     like: reader
     where: build hook
     ex: tac f => read f
     ex: base64 f => read f
-    note: Print or transform the files they are given (or standard input) on standard output.
+    ex: lsblk /dev/sda => read /dev/sda
+    ex: lsmod => none
+    note: Print or transform the files they are given (or standard input) on standard output; the listing commands (ps, lsblk, lsmod...) only read system state.
 
 tr
     like: pure
