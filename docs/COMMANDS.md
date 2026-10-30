@@ -65,7 +65,7 @@ sudo, env, time, xargs   exec=@cmd
 
 ## 구현된 형식 (1단계)
 - **필드**: `covers:`(필수) `valued:`(값을 받는 옵션) `subs:`(아는 하위 명령) `like:` `where:` `single-dash-long: yes`(`find`처럼 `-name`이 옵션 하나) `mode-first: yes`(`chmod -x f`처럼 첫 단어가 `-`로 시작하는 모드) `bundled-first: yes`(`tar xf a`처럼 대시 없는 옵션 묶음) `effects: none` `ex:` `note:`(필수), 그리고 `종류 = 대상 [조건]` 줄.
-- **대상**: `@none` `@args`(`[:-1]` `[-1]` `[1:]` `[0]`) `@opt(-o|--output)` `@url` `@script` `@cmd` `@stdin` `@tree`(소스·빌드 트리) `@deps`(의존성) `@find-paths` `@find-exec`, `system`·`spawn`은 단어(`system = users`).
+- **대상**: `@none` `@args`(`[:-1]` `[-1]` `[1:]` `[0]`) `@opt(-o|--output)` `@url` `@script` `@cmd` `@stdin` `@tree`(소스·빌드 트리) `@deps`(의존성) `@system`(읽기 전용: 실행 중인 시스템의 정보, 빌드 트리는 제외) `@find-paths` `@find-exec`, `system`·`spawn`은 단어(`system = users`).
 - **조건**(`[...]`, 안의 항목은 모두 만족해야 함): `-i|--in-place*` 플래그가 있을 때, `!-n` 없을 때, `sub:clone|fetch` 하위 명령, `?이름` 술어(`sed-active` `awk-active` `tar-exec` `git-config-exec` `inline-code` `piped` `pacman-write` `shopt-expand-aliases`; 기존 `strict.py`의 검사를 이름으로 부르는 것이며, 표에 코드를 쓰지 않기 위한 장치입니다).
 - **예시**: `ex: 명령줄 => read a; write b`, 표준입력으로 받는 경우는 `ex: | python => exec stdin`. 효과가 없으면 `none`.
 - **한계**: `@tree`는 "소스·빌드 트리 어딘가"이고 구체 경로가 아닙니다. 위치(`area`)에 따른 판정은 정책 단계(5단계)에서 합니다. 효과가 여러 개일 때 "하나라도 일어날 수 있다"는 보수적 합집합입니다.

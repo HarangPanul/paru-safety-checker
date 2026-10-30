@@ -28,11 +28,12 @@ BUNDLED = re.compile(r"^[A-Za-z]+$")
 ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
 DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 TARGET = re.compile(
-    r"^@(?P<kind>none|args|opt|url|script|cmd|stdin|tree|deps|find-paths|find-exec)"
+    r"^@(?P<kind>none|args|opt|url|script|cmd|stdin|tree|deps|system|find-paths|find-exec)"
     r"(?:\((?P<opts>[^)]*)\)|\[(?P<slice>-?\d*(?::-?\d*)?)\])?$")
 LITERAL = re.compile(r"^[a-z][a-z0-9-]*$")
 EXECUTABLE_TARGETS = frozenset({"script", "cmd", "stdin", "tree", "args", "opt", "find-exec", "none"})
 FILE_TARGETS = frozenset({"args", "opt", "tree", "stdin", "none", "find-paths"})
+READ_TARGETS = FILE_TARGETS | {"system"}          # @system: system state outside the build tree, only for read
 NETWORK_TARGETS = frozenset({"url", "deps", "args", "opt", "none"})
 
 
@@ -73,7 +74,7 @@ def _describe_condition(c: "Condition") -> str:
 
 @dataclass(frozen=True)
 class Target:
-    kind: str                    # none args opt url script cmd stdin tree deps find-paths find-exec, or "literal"
+    kind: str                    # none args opt url script cmd stdin tree deps system find-paths find-exec, or "literal"
     opts: tuple = ()             # for @opt(...)
     start: int | None = None     # for @args[a:b] / @args[n]
     stop: int | None = None
@@ -179,6 +180,7 @@ PREDICATES: dict[str, Callable[[Context], bool]] = {
     "piped": lambda ctx: ctx.piped,
     "pacman-write": _pacman_write,
     "remote-argument": lambda ctx: any(REMOTE_OPERAND.match(a) for a in ctx.parsed.positional),
+    "has-operand": lambda ctx: bool(ctx.parsed.positional),
     "shopt-expand-aliases": lambda ctx: "expand_aliases" in ctx.args,
 }
 
@@ -213,7 +215,7 @@ def _parse_target(text: str, kind: str, line: int) -> Target:
                 start, index = int(piece), True
         if which == "opt" or which in ("args",):
             pass
-        allowed = {"read": FILE_TARGETS, "write": FILE_TARGETS, "delete": FILE_TARGETS, "perm": FILE_TARGETS,
+        allowed = {"read": READ_TARGETS, "write": FILE_TARGETS, "delete": FILE_TARGETS, "perm": FILE_TARGETS,
                    "exec": EXECUTABLE_TARGETS, "fetch": NETWORK_TARGETS, "upload": NETWORK_TARGETS}.get(kind)
         if allowed is not None and which not in allowed:
             raise TableError(f"line {line}: {kind} cannot take the target @{which}")
@@ -504,7 +506,7 @@ def _resolve_target(target: Target, ctx: Context) -> list[str]:
     if kind == "cmd":
         rest = [a for a in parsed.positional if not (ASSIGNMENT.match(a) or DURATION.match(a))]
         return rest[:1]
-    if kind in ("stdin", "tree", "deps"):
+    if kind in ("stdin", "tree", "deps", "system"):
         return [kind]
     if kind == "find-paths":
         paths = []

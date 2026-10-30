@@ -230,3 +230,21 @@ def test_the_command_line_tool(capsys):
     assert "0 problem(s)" in capsys.readouterr().out
     assert ct.main(["--show", "sed"]) == 0 and "exec = @script [?sed-active]" in capsys.readouterr().out
     assert ct.main(["--show", "nonesuch"]) == 1
+
+
+def test_system_info_commands_read_the_system_and_the_build_tree_is_not_named():
+    assert effects("ps", "aux") == ["read system"]
+    assert effects("uname", "-a") == ["read system"]
+    assert effects("lsmod") == ["read system"]
+
+
+def test_a_lookup_reads_the_system_only_when_given_a_name():
+    assert effects("which") == [] and effects("type") == []
+    assert effects("which", "gcc") == ["read system"]
+    assert effects("type", "gcc") == ["read system"]
+
+
+def test_system_is_only_a_read_target():
+    for kind in ("write", "delete", "perm", "exec"):
+        with pytest.raises(ct.TableError):
+            table(f"x\n    covers: *\n    {kind} = @system\n    ex: x => none\n    note: n\n")

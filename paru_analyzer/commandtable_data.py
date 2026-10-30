@@ -46,6 +46,16 @@ TABLE = r"""
     effects: none
     note: Works on its arguments and standard input only and touches no file.
 
+@system-info
+    covers: *
+    read = @system
+    note: Reports something about the running system and needs no operand; the build and source trees are not what it reads, so only the system is named.
+
+@system-lookup
+    covers: *
+    read = @system [?has-operand]
+    note: Looks a name up in the running system and does nothing without one; only a given name makes it read the system.
+
 @reader
     covers: *
     read = @args
@@ -53,7 +63,7 @@ TABLE = r"""
 
 # ---- shell builtins and messages ----
 
-echo, printf, true, false, :, test, export, unset, local, declare, readonly, set, shift, return, exit, id
+echo, printf, true, false, :, test, export, unset, local, declare, readonly, set, shift, return, exit
     like: pure
     where: build hook
     ex: echo hi => none
@@ -72,18 +82,20 @@ msg, msg2, warning, error, plain, plainerr
     ex: msg2 hi => none
     note: makepkg's message functions.
 
-vercmp, basename, dirname, nproc, uname, which, tput
+vercmp, basename, dirname, tput
     like: pure
     where: build hook
     ex: vercmp 1 2 => none
     ex: tput bold => none
     note: Commands that only compute or print on their arguments.
 
-type
-    like: pure
+type, which
+    like: system-lookup
     where: build hook
-    ex: type foo => none
-    note: Only looks a name up.
+    ex: type foo => read system
+    ex: type => none
+    ex: which foo => read system
+    note: Looks a name up (commands, functions, PATH); with no name it does nothing.
 
 read
     covers: *
@@ -114,13 +126,21 @@ date
     ex: date -s tomorrow => system clock
     note: Prints the time; with -s it sets the system clock.
 
-getopts, umask, ulimit, alias, unalias, sleep, seq, yes, expr, factor, printenv, getconf, locale, lsb_release, whoami, logname, tty, arch, sync, groups, uptime, free, bc
+getopts, umask, ulimit, alias, unalias, sleep, seq, yes, expr, factor, sync, bc
     like: pure
     where: build hook
     ex: sleep 1 => none
     ex: expr 1 + 1 => none
     ex: umask 022 => none
     note: Builtins and small commands that compute or print on their arguments, or ask the system a question, and touch no file.
+
+id, uname, nproc, whoami, logname, groups, arch, tty, uptime, free, getconf, locale, lsb_release, printenv, ps, pgrep, pidof, lscpu, lsblk, lsmod, lspci, lsusb
+    like: system-info
+    where: build hook
+    ex: uname -a => read system
+    ex: ps aux => read system
+    ex: lsmod => read system
+    note: Ask the running system a question (who, what hardware, which processes, which modules); they can report anything about the system, so they count as reading it. An operand (lsblk /dev/sda) does not narrow that.
 
 # ---- reading ----
 
@@ -155,14 +175,12 @@ egrep, fgrep
     ex: egrep foo f => read f
     note: grep with a fixed pattern syntax.
 
-od, hexdump, rev, tac, nl, fold, paste, join, comm, expand, unexpand, column, fmt, base64, sha224sum, sha384sum, shasum, sum, tsort, numfmt, diff3, sdiff, lsattr, getfacl, less, more, zstdcat, lzcat, lz4cat, ps, pgrep, pidof, lscpu, lsblk, lsmod, lspci, lsusb
+od, hexdump, rev, tac, nl, fold, paste, join, comm, expand, unexpand, column, fmt, base64, sha224sum, sha384sum, shasum, sum, tsort, numfmt, diff3, sdiff, lsattr, getfacl, less, more, zstdcat, lzcat, lz4cat
     like: reader
     where: build hook
     ex: tac f => read f
     ex: base64 f => read f
-    ex: lsblk /dev/sda => read /dev/sda
-    ex: lsmod => none
-    note: Print or transform the files they are given (or standard input) on standard output; the listing commands (ps, lsblk, lsmod...) only read system state.
+    note: Print or transform the files they are given (or standard input) on standard output.
 
 tr
     like: pure
