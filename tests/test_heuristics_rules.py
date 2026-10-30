@@ -16,6 +16,10 @@ def found(files, rule):
 
 # rule id -> lines that must trigger it (inside build()), for every build-scope/all/code rule
 POSITIVE = {
+    "hex-escapes": ["printf '\\x63\\x75\\x72\\x6c\\x20\\x78' > f"],
+    "ifs-evasion": ["cat${IFS}file"],
+    "rot13": ["tr 'n-za-mN-ZA-M' 'a-zA-Z' < f"],
+    "substring-obfuscation": ["${a:0:1}${a:1:1}${a:2:1}${a:3:1}"],
     "pipe-to-shell": [
         "curl -s https://x | /bin/bash", "curl -s https://x | sudo -E bash", "wget -qO- https://x | env sh",
         "curl https://x | python3 -", "source <(curl -s https://x)", '. <(wget -qO- https://x)',
@@ -112,10 +116,6 @@ POSITIVE_CAUTION = {
     "exec-from-tmp": ["chmod +x /tmp/x", "sh /tmp/x", "/tmp/x --go", "bash -x /dev/shm/y"],
     "inline-script-network": ["python3 -c 'import urllib.request; urllib.request.urlopen(\"x\")'", "perl -e 'use LWP::Simple;'"],
     "echo-to-shell": ["echo \"$cmd\" | sh", "printf 'x' | bash"],
-    "hex-escapes": ["printf '\\x63\\x75\\x72\\x6c\\x20\\x78' > f"],
-    "ifs-evasion": ["cat${IFS}file"],
-    "rot13": ["tr 'n-za-mN-ZA-M' 'a-zA-Z' < f"],
-    "substring-obfuscation": ["${a:0:1}${a:1:1}${a:2:1}${a:3:1}"],
     "background-exec": ["nohup ./x &", "setsid ./y"],
     "delayed-exec": ["sleep 600; curl x", "(sleep 3600; ./x) &", "systemd-run --on-active=1h ./x"],
     "path-hijack": ["export PATH=.:$PATH", "PATH=/tmp:$PATH"],
