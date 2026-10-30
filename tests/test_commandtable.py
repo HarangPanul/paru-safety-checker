@@ -32,11 +32,24 @@ xdg-desktop-menu xdg-icon-resource xdg-mime
 
 # in the table but not in the old allowlists: git and pacman were special cases in the code, python2/3 stood for a pattern
 BUILD_ONLY_IN_TABLE = {"git", "pacman", "python2", "python3"} | set(
-    "asar bzcat curl desktop-file-edit file gendesk jq mktemp rsync strings tput wget xzcat zcat".split())
+    "asar bzcat curl desktop-file-edit file gendesk jq mktemp rsync strings tput wget xzcat zcat".split()) | set("""
+alias arch base64 bc chattr column comm diff3 expand expr factor fmt fold free getconf getfacl getopts groups
+hexdump join less locale logname lsattr lsb_release lsblk lscpu lsmod lspci lsusb lz4 lz4cat lzcat lzma mkfifo
+more nl numfmt od paste pgrep pidof printenv ps rev sdiff seq sha224sum sha384sum shasum shred sleep split sum
+sync tac truncate tsort tty ulimit umask unalias unexpand unlink unlzma unzstd uptime whoami yes zstdcat
+""".split())
 HOOK_ONLY_IN_TABLE = {"git", "pacman"} | set("""
 cd pushd popd pwd let wait continue break apparmor_parser b2sum basename bzcat cksum cmp curl cut df diff dirname du file gpasswd groupadd groupdel groupmod head insmod jq ls
 md5sum mktemp modprobe nm nproc objdump readelf readlink realpath rmmod rsync sha1sum sha256sum sha512sum stat strings tail tput tr
 uname useradd userdel usermod vercmp wc which wget xzcat zcat
+""".split()) | set("""
+alias arch awk base64 bc chattr chgrp column comm date diff3 egrep env expand expr factor fgrep find fmt fold
+free gawk getconf getfacl getopts groups grub-install grub-mkconfig hexdump install install-info ionice join
+kill killall less locale locale-gen logname lsattr lsb_release lsblk lscpu lsmod lspci lsusb lz4cat lzcat mawk
+mkfifo mkfontdir mkfontscale mkinitcpio more nice nl numfmt od paste pgrep pidof pkill printenv ps rev sdiff
+sed seq sha224sum sha384sum shasum shred sleep sort split stdbuf sum sync sysctl systemd-hwdb tac tee time
+timeout truncate tsort tty ulimit umask unalias unexpand uniq unlink update-ca-certificates update-ca-trust
+uptime whoami xargs yes zstdcat
 """.split())
 
 

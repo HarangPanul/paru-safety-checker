@@ -108,10 +108,26 @@ hash
 
 date
     covers: *
+    where: build hook
     system = clock [-s|--set]
     ex: date +%s => none
     ex: date -s tomorrow => system clock
     note: Prints the time; with -s it sets the system clock.
+
+getopts, umask, ulimit, alias, unalias, sleep, seq, yes, expr, factor, printenv, getconf, locale, lsb_release, whoami, logname, tty, arch, sync, groups, uptime, free, bc
+    like: pure
+    where: build hook
+    ex: sleep 1 => none
+    ex: expr 1 + 1 => none
+    ex: umask 022 => none
+    note: Builtins and small commands that compute or print on their arguments, or ask the system a question, and touch no file.
+
+ps, pgrep, pidof, lscpu, lsblk, lsmod, lspci, lsusb
+    like: pure
+    where: build hook
+    ex: pgrep foo => none
+    ex: lsmod => none
+    note: List processes, devices or modules; they change nothing.
 
 # ---- reading ----
 
@@ -142,9 +158,16 @@ ls, head, tail, wc, stat, du, df, diff, cmp, sha256sum, sha512sum, sha1sum, md5s
 
 egrep, fgrep
     like: grep
-    where: build
+    where: build hook
     ex: egrep foo f => read f
     note: grep with a fixed pattern syntax.
+
+od, hexdump, rev, tac, nl, fold, paste, join, comm, expand, unexpand, column, fmt, base64, sha224sum, sha384sum, shasum, sum, tsort, numfmt, diff3, sdiff, lsattr, getfacl, less, more, zstdcat, lzcat, lz4cat
+    like: reader
+    where: build hook
+    ex: tac f => read f
+    ex: base64 f => read f
+    note: Print or transform the files they are given (or standard input) on standard output.
 
 tr
     like: pure
@@ -161,6 +184,7 @@ cut
 
 sort
     covers: *
+    where: build hook
     valued: -o -k -t -S -T --output
     read = @args
     write = @opt(-o|--output)
@@ -169,6 +193,7 @@ sort
 
 uniq
     covers: *
+    where: build hook
     valued: -f -s -w
     read = @args[:1]
     write = @args[1:2]
@@ -177,6 +202,7 @@ uniq
 
 tee
     covers: -a -i -p --append --ignore-interrupts
+    where: build hook
     read = @stdin
     write = @args
     ex: tee log => read stdin; write log
@@ -205,6 +231,7 @@ mv
 install
     covers: -D -d -m -o -g -p -v -s -C -c -b -T --mode* --owner* --group* --preserve-timestamps --verbose
     valued: -m -o -g -S --mode --owner --group --suffix
+    where: build hook
     read = @args[:-1] [!-d]
     write = @args[-1] [!-d]
     write = @args [-d]
@@ -269,7 +296,7 @@ chown
 
 chgrp
     like: chown
-    where: build
+    where: build hook
     ex: chgrp wheel a => perm a
     note: The first word is the group, the rest are files.
 
@@ -292,6 +319,7 @@ patch
 
 find
     covers: *
+    where: build hook
     single-dash-long: yes
     valued: -fprint -fprint0 -fprintf -fls -name -iname -path -ipath -regex -type -maxdepth -mindepth -newer -size -perm -user -group -mtime -atime -ctime -mmin
     read = @find-paths
@@ -306,12 +334,14 @@ find
 
 xargs
     like: wrapper
+    where: build hook
     valued: -n -I -P -L -d -E -s -a
     ex: xargs -0 rm => exec rm
     note: Runs the command it is given with arguments read from standard input.
 
 sed
     covers: *
+    where: build hook
     valued: -e -f --expression --file
     read = @args[1:] [!-e !-f !--expression !--file]
     read = @args [-e|-f|--expression|--file]
@@ -325,6 +355,7 @@ sed
 
 awk, gawk, mawk
     covers: *
+    where: build hook
     valued: -F -v -f --file
     read = @args[1:] [!-f !--file]
     read = @args [-f|--file]
@@ -334,6 +365,56 @@ awk, gawk, mawk
     ex: awk '{print $1}' f => read f
     ex: awk 'BEGIN{system("x")}' => exec BEGIN{system("x")}
     note: A program that calls system, getline from a pipe or prints to a pipe runs commands; a program read from a file cannot be seen.
+
+truncate
+    covers: *
+    valued: -s -r --size --reference
+    where: build hook
+    write = @args
+    ex: truncate -s 0 f => write f
+    note: Sets the length of the files it is given (creating them).
+
+mkfifo
+    covers: -m --mode
+    valued: -m --mode
+    where: build hook
+    write = @args
+    ex: mkfifo p => write p
+    note: Creates named pipes.
+
+unlink
+    covers: *
+    where: build hook
+    delete = @args
+    ex: unlink f => delete f
+    note: Removes one file.
+
+shred
+    covers: *
+    valued: -n -s --iterations --size
+    where: build hook
+    write = @args
+    delete = @args [-u|--remove*]
+    ex: shred f => write f
+    ex: shred -u f => delete f; write f
+    note: Overwrites files, and with -u removes them.
+
+split
+    covers: *
+    valued: -b -l -n -a -C --bytes --lines --number --suffix-length --line-bytes
+    where: build hook
+    read = @args[:1]
+    write = @tree
+    ex: split -l 10 f => read f; write tree
+    note: Cuts a file into pieces written next to it.
+
+chattr
+    covers: *
+    where: build hook
+    mode-first: yes
+    perm = @args[1:]
+    ex: chattr +i f => perm f
+    note: Changes file attributes; the first word is the change (the chattr-immutable rule looks at +i).
 
 # ---- archives and compression ----
 
@@ -370,7 +451,7 @@ zip
     ex: zip a.zip x y => read x; read y; write a.zip
     note: The first word is the archive that is written.
 
-gzip, gunzip, bzip2, bunzip2, xz, unxz, zstd
+gzip, gunzip, bzip2, bunzip2, xz, unxz, zstd, unzstd, lzma, unlzma, lz4
     covers: *
     valued: -T -o -S --output --threads
     read = @args
@@ -490,7 +571,7 @@ python, python2, python3, pypy, pypy3, node, ruby, perl, php, lua, luajit
     ex: | python => exec stdin; read tree; write tree
     note: Interpreters; where the program comes from decides the target.
 
-flex, bison, yacc, lex, m4, nasm, yasm, msgfmt, msgmerge, xgettext, glib-compile-resources, desktop-file-validate, desktop-file-install, appstreamcli, mkfontscale, mkfontdir, rsvg-convert, convert, magick, sphinx-build, doxygen, asciidoctor, help2man, sass, protoc, patchelf, chrpath, install-info, makeinfo, texi2any
+flex, bison, yacc, lex, m4, nasm, yasm, msgfmt, msgmerge, xgettext, glib-compile-resources, desktop-file-validate, desktop-file-install, appstreamcli, rsvg-convert, convert, magick, sphinx-build, doxygen, asciidoctor, help2man, sass, protoc, patchelf, chrpath, makeinfo, texi2any
     like: file-tool
     ex: msgfmt a.po => read a.po; write a.po
     note: Generators and converters that read the files given and write results next to them.
@@ -501,17 +582,30 @@ glib-compile-schemas, fc-cache, gtk-update-icon-cache, update-desktop-database, 
     ex: fc-cache -f dir => read dir; write dir
     note: Rebuild a cache in the directory they are given; on the live system the path says where.
 
+mkfontscale, mkfontdir, install-info
+    like: file-tool
+    where: build hook
+    ex: mkfontscale dir => read dir; write dir
+    note: Rebuild a font or info index in the directory they are given.
+
 # ---- wrappers ----
 
-time, nice, timeout, stdbuf, ionice, fakeroot, builtin
+time, nice, timeout, stdbuf, ionice
     like: wrapper
+    where: build hook
     valued: -n -c -p -s -k -i -o -e
     ex: nice -n 10 make => exec make
     ex: timeout 5 sleep => exec sleep
     note: Run the rest of the command line.
 
+fakeroot, builtin
+    like: wrapper
+    ex: fakeroot make => exec make
+    note: Run the rest of the command line.
+
 env
     like: wrapper
+    where: build hook
     valued: -u -C -S
     ex: env X=1 make => exec make
     note: Runs the rest of the command line with changed variables.
@@ -631,4 +725,47 @@ update-mime-database, gtk4-update-icon-cache, xdg-desktop-menu, xdg-mime, gio, g
     where: hook
     ex: update-mime-database /usr/share/mime => read /usr/share/mime; write /usr/share/mime
     note: Update desktop or loader caches in the directory they are given.
+
+update-ca-trust, update-ca-certificates
+    covers: *
+    where: hook
+    system = ca-trust
+    ex: update-ca-trust => system ca-trust
+    note: Rebuilds the system certificate store.
+
+mkinitcpio, grub-mkconfig, grub-install
+    covers: *
+    where: hook
+    system = boot
+    ex: mkinitcpio -P => system boot
+    note: Rebuilds the initramfs or the boot loader configuration.
+
+locale-gen
+    covers: *
+    where: hook
+    system = locale
+    ex: locale-gen => system locale
+    note: Generates the system locales.
+
+sysctl
+    covers: *
+    where: hook
+    system = kernel-parameters [-w|--write|-p|--load|--system]
+    ex: sysctl -a => none
+    ex: sysctl -w net.ipv4.ip_forward=1 => system kernel-parameters
+    note: Reads kernel parameters; -w, -p and --system set them.
+
+systemd-hwdb
+    covers: *
+    where: hook
+    system = hardware-db [sub:update]
+    ex: systemd-hwdb update => system hardware-db
+    note: Rebuilds the hardware database.
+
+kill, killall, pkill
+    covers: *
+    where: hook
+    system = processes
+    ex: pkill foo => system processes
+    note: Stops or signals running processes, as a hook does for the daemon it is replacing.
 """
